@@ -1,0 +1,103 @@
+---
+title: "Getting started with R and Data"
+output: html_document
+---
+
+```{r setup, include = FALSE, echo = FALSE}
+library(tidyverse)
+source('lib/credit_data_mapping.R')
+options(digits = 3)
+```
+
+
+## Transforming data in R
+
+The old way
+
+```{r load_credit_data_base}
+credit_data <- read.table(
+    'data/credit_data.txt',
+    sep  =  " ",
+    stringsAsFactors = FALSE,
+    header = FALSE
+)
+colnames(credit_data) <- credit_data_colnames
+```
+
+```{r transform_credit_data_base}
+
+for(ci in colnames(credit_data)) {
+    if(is.character(credit_data[[ci]])) {
+        credit_data[[ci]] <- as.factor(credit_data_mapping[credit_data[[ci]]])
+    }
+}
+credit_data$Good_Loan <- as.factor(ifelse(credit_data$Good_Loan == 1, 'GoodLoan', 'BadLoan'))
+```
+
+```{r summary_credit_data_base}
+summary(credit_data)
+```
+
+
+
+The tidy way
+
+```{r load_credit_data_tidy}
+read_delim(
+    'data/credit_data.txt',
+    delim = ' ',
+    col_names = credit_data_colnames
+) %>% 
+    modify_if(is.character, ~factor(credit_data_mapping[.x])) %>% 
+    modify_if(is.numeric, as.integer) %>% 
+    rename(Loan = Good_Loan) %>% 
+    mutate(
+        Loan = factor(Loan - 1, labels = c('Good', 'Bad'))
+    ) %>% 
+    write_rds('data/credit_data.rds')
+```
+
+
+```{r load_credit_data}
+credit_data <- read_rds('data/credit_data.rds')
+credit_data %>% 
+    count(Loan)
+
+```
+
+### Examining the data
+
+Using `table`
+
+
+```{r}
+prop.table(table(credit_data$Purpose, credit_data$Loan), margin=1)
+```
+
+The `tidy` way
+
+
+```{r}
+credit_data %>% 
+    group_by(Purpose, Loan) %>% 
+    summarise(n = n(), .groups = 'drop') %>%
+    group_by(Purpose) %>%
+    mutate(perc = n / sum(n)) %>% 
+    ungroup() %>% 
+    select(-n) %>% 
+    pivot_wider(names_from = 'Loan', values_from = 'perc')
+```
+
+```{r}
+prop.table(xtabs(~Purpose+Loan, data = credit_data), margin=1)
+```
+
+
+Using `xtabs`
+
+```{r}
+prop.table(xtabs(~Purpose+Loan, data = credit_data), margin=1)
+```
+
+
+
