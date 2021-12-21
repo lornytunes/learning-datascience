@@ -4,15 +4,24 @@ output: html_document
 ---
 
 ```{r setup, include = FALSE, echo = FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warn = FALSE,
+    error = FALSE,
+    include = TRUE,
+    cache = FALSE
+)
+options(digits = 3)
+
 library(tidyverse)
 source('lib/credit_data_mapping.R')
-options(digits = 3)
+
 ```
 
 
 ## Transforming data in R
 
-The old way
+### The old way
 
 ```{r load_credit_data_base}
 credit_data <- read.table(
@@ -40,7 +49,7 @@ summary(credit_data)
 
 
 
-The tidy way
+### The tidy way
 
 ```{r load_credit_data_tidy}
 read_delim(
@@ -48,10 +57,13 @@ read_delim(
     delim = ' ',
     col_names = credit_data_colnames
 ) %>% 
+    # map codes to their values and save as factors
     modify_if(is.character, ~factor(credit_data_mapping[.x])) %>% 
+    # convert all numeric columns to integers
     modify_if(is.numeric, as.integer) %>% 
     rename(Loan = Good_Loan) %>% 
     mutate(
+        # 1 is good, 2 is bad. Make 0 -> good, 1 -> bad
         Loan = factor(Loan - 1, labels = c('Good', 'Bad'))
     ) %>% 
     write_rds('data/credit_data.rds')
@@ -65,16 +77,16 @@ credit_data %>%
 
 ```
 
-### Examining the data
+## Examining variable of interest
 
-Using `table`
+### Using `table`
 
 
 ```{r}
 prop.table(table(credit_data$Purpose, credit_data$Loan), margin=1)
 ```
 
-The `tidy` way
+### The `tidy` way
 
 
 ```{r}
@@ -88,12 +100,8 @@ credit_data %>%
     pivot_wider(names_from = 'Loan', values_from = 'perc')
 ```
 
-```{r}
-prop.table(xtabs(~Purpose+Loan, data = credit_data), margin=1)
-```
 
-
-Using `xtabs`
+### Using `xtabs`
 
 ```{r}
 prop.table(xtabs(~Purpose+Loan, data = credit_data), margin=1)
