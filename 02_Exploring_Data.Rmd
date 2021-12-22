@@ -1,0 +1,389 @@
+---
+title: "Exploring Data"
+output: html_document
+---
+
+
+```{r, setup, include = FALSE, echo = FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warn = FALSE,
+    error = FALSE,
+    include = TRUE,
+    cache = FALSE
+)
+library(tidyverse)
+library(WVPlots)
+options(digits=3)
+ptable <- function(f) {
+    prop.table(table(f))
+}
+```
+
+```{r load_customer_data}
+customer_data <- read_rds('data/customer_data.rds')
+```
+
+
+```{r response_variable_distribution}
+ptable(customer_data$health_ins)
+```
+
+The `summary()` command
+
+```{r base_summary}
+summary(customer_data)
+```
+
+
+```{r tidy_summary}
+skimr::skim(customer_data)
+```
+
+
+Looking for
+
+- Missing values
+- invalid values and outliers
+- Data ranges that are too wide or too narrow
+- The units of data
+
+
+### Missing values
+
+
+```{r na_counts}
+na_counts <- map_int(customer_data, ~sum(is.na(.x)))
+na_counts
+# as a proportion
+na_counts / nrow(customer_data)
+```
+
+```{r na_counts_df}
+# if you want a data frame
+na_counts_df <- map_df(customer_data, ~sum(is.na(.x)))
+na_counts_df %>% 
+    summarise(across(everything(), ~(. / nrow(customer_data))))
+
+```
+
+```{r na_counts_cleanup}
+rm(na_counts, na_counts_df)
+```
+
+
+Is employed
+
+```{r}
+customer_data %>% 
+    mutate(is_employed = factor(is_employed)) %>%
+    .$is_employed %>%
+    fct_count(prop = TRUE)
+  
+```
+
+What does NA mean? Perhaps not in the active workforce. Perhaps collecting only started recently
+
+Note the similarity between the other missing values
+
+```{r customer_data_related_nas}
+customer_data %>% 
+    filter(is.na(recent_move)) %>% 
+    select(housing_type, recent_move, num_vehicles, gas_usage) %>% 
+    map_int(~sum(is.na(.x)))
+```
+
+```{r customer_data_remove_nas}
+customer_data <- customer_data %>% 
+    filter(!is.na(recent_move))
+```
+
+
+
+### Invalid values and outliers
+
+Old way
+
+```{r}
+summary(customer_data$income)
+summary(customer_data$age)
+```
+
+Tidy way
+
+```{r summarise_income_and_age}
+customer_data %>% 
+    select(income, age) %>% 
+    map(summary)
+```
+
+Do the negative values in income mean debt or bad data?
+
+Ages of 0 and above 110 fall outside of the expected range. zero could be a sentinel value - unknown or refused to state.
+
+### Data Range
+
+Is there enough variation to see relationships
+
+
+```{r customer_data_data_ranges}
+customer_data %>% 
+    select(-custid) %>% 
+    group_by(health_ins) %>% 
+    skimr::skim()
+```
+
+### Units
+
+Is income hourly, yearly? Units of 1000?
+
+
+## Using Graphics
+
+If unimodal then the distribution corresponds to a single population of subjects
+
+```{r age_plot}
+ggplot(customer_data, aes(x = age)) +
+    geom_density() +
+    scale_x_continuous(limits = c(0, 125), breaks = seq(0, 125, 25))
+```
+
+### Histograms
+
+Shows where data is concentrated and highlights outliers and anomalies
+
+```{r gas_usage_plot}
+ggplot(customer_data, aes(x = gas_usage)) +
+    geom_histogram(binwidth = 10, fill = 'grey', colour = 'steelblue')
+```
+
+The data dictionary says the following
+
+- 001: Included in rent or condo fee
+- 002: Included in electricitypayment
+- 003: no charge or gas not used
+- 004-999: $4 to $999 (rounded and top coded)
+
+so we have sentinal values. Replace with na/s and add additonal boolean variables.
+
+```{r plot_gas_usage_without_sentinal_values}
+customer_data %>% 
+    filter(gas_usage > 3) %>% 
+    ggplot(aes(x = gas_usage)) +
+    geom_histogram(binwidth = 10, fill = 'grey', colour = 'steelblue')
+```
+
+### Density plots
+
+```{r income_density_plot}
+customer_data %>% 
+    ggplot(aes(x = income)) +
+    geom_density() +
+    scale_x_continuous(labels = scales::dollar)
+```
+
+Not blip at around \$500000, the wide data range (several orders of maginitude) and the concentration at the low end (less than \$20000 p/a)
+
+The change in orders of magnitude is more important than changes in absolute units.
+
+```{r log_income_density_plot}
+# remove zero and negative values
+customer_data %>% 
+    filter(income > 9) %>% 
+    ggplot(aes(x = income)) +
+    geom_density() +
+    scale_x_log10(
+        labels = scales::dollar,
+        breaks = 10^(1:6)
+    ) +
+    annotation_logticks(sides="bt", color="gray") +
+    labs(y=NULL)
+```
+
+Again, two distrubutions mixed together
+
+### Bar Charts
+
+```{r marital_status_bar_chart}
+customer_data %>% 
+    ggplot(aes(x = marital_status)) +
+    geom_bar(fill = 'gray') +
+    labs(y=NULL)
+```
+
+```{r state_of_res_bar_chart, fig.height=10, fig.width=8}
+customer_data %>% 
+    ggplot(aes(x = fct_rev(fct_infreq(state_of_res)))) +
+    geom_bar(fill = 'gray') +
+    scale_y_continuous(expand = c(0, 0)) +
+    coord_flip() +
+    labs(x = NULL, y = NULL)
+```
+
+### Two variables
+
+```{r remove_invalid_ages_and_incomes}
+customer_data <- customer_data %>% 
+    filter(0 < age & age < 100 & 0 < income & income < 200000)
+```
+
+```{r customer_data_correlations}
+customer_data %>% 
+    keep(is.numeric) %>% 
+    cor(use = 'na.or.complete') %>% 
+    round(digits=2)
+```
+
+
+A visualization helps understanding the relationship between age and income.
+
+```{r plot_age_against_income}
+customer_data %>% 
+    sample_frac(size = 0.1, replace = FALSE) %>%
+    ggplot(aes(x = age, y = income)) +
+    geom_point(alpha = 1/3) +
+    geom_smooth(se = FALSE) +
+    ggtitle('Income as a function of age')
+```
+
+The smoothing curve makes it easier to see that in this population, income tends to increase with age from a person’s twenties until their mid-thirties, after which income increases at a slower, almost flat, rate until about a person’s mid-fifties. Past the mid-fifties, income tends to decrease with age.
+
+### Health insurance coverage as a function of age
+
+```{r binary_scatter_plot_tidy}
+customer_data %>% 
+    sample_frac(size = 0.1, replace = FALSE) %>%
+    ggplot(aes(x = age, y = as.integer(health_ins))) +
+    geom_point(aes(colour = health_ins)) +
+    geom_smooth(method = 'glm', se = FALSE, method.args = list(family = 'binomial')) +
+    labs(y = NULL)
+```
+
+Or
+
+```{r binary_scatter_plot_wv}
+
+customer_data %>% 
+    sample_frac(size = 0.1, replace = FALSE) %>% 
+    BinaryYScatterPlot(
+        "age",
+        "health_ins",
+        title = "Probability of health insurance by age"
+    )
+
+```
+
+So about 80% of people in their early 20s have health insurance.
+
+The smoothing curve shows the fraction of customers with health insurance, as a function of age.
+
+### Hex bins
+
+```{r age_income_hex}
+customer_data %>% 
+    ggplot(aes(age, income)) +
+    geom_hex() +
+    scale_y_continuous(labels = scales::dollar, name = NULL) +
+    geom_smooth(colour = 'yellow', se = FALSE) +
+    ggtitle('Income as a function of age')
+```
+
+```{r age_income_hex_wv}
+customer_data %>% 
+    HexBinPlot(
+        'age',
+        'income',
+        'Income as a function of age'
+    ) +
+    geom_smooth(colour = 'black', se = FALSE)
+```
+
+### Bar Charts
+
+```{r marital_status_by_health_ins_bar_chart}
+customer_data %>% 
+    ggplot(aes(x = marital_status, fill = fct_rev(factor(health_ins)))) +
+    geom_bar() +
+    labs(y = NULL, fill = 'Health Insurance')
+```
+
+### Shadow Plots
+
+If you want to compare the number of insured and uninsured people across categories, while keeping a sense of the total number of people in each category, one plot to try is what we call a shadow plot. A shadow plot of this data creates two graphs, one for the insured population and one for the uninsured population. Both graphs are superimposed against a “shadow graph” of the total population. This allows comparison both across and within marital status categories, while maintaining information about category totals.
+
+```{r matrital_status_shadow_plot, fig.height=7, fig.width=10}
+customer_data %>% 
+    ShadowPlot(
+        "marital_status",
+        "health_ins",
+        title = "Health insurance status by marital status"
+    )
+```
+
+The dark section is uninsured (top) and insured (bottom) customers
+
+To compare ratios use a filled bar chart
+
+```{r marital_status_by_health_ins_filled_bar_chart}
+customer_data %>% 
+    ggplot(aes(x = marital_status, fill = health_ins)) +
+    geom_bar(position = 'fill') +
+    labs(fill = 'Health Insurance') +
+    labs(x = NULL, y = NULL)
+```
+
+The filled bar chart makes it obvious that divorced customers are slightly more likely to be uninsured than married ones. But you’ve lost the information that being widowed, though highly predictive of insurance coverage, is a rare category.
+
+
+### Faceting
+
+```{r plot_housing_type_marital_status, fig.height=8, fig.width=10}
+customer_data %>% 
+    ggplot(aes(x = marital_status)) +
+    geom_bar(fill = 'darkgray') +
+    facet_wrap(~housing_type, scale = 'free_x') +
+    labs(x = NULL) +
+    coord_flip()
+```
+
+Comparing population densities across categories
+
+```{r population_densities_by_marital_status}
+customer_data %>% 
+    filter(marital_status %in% c('Never married', 'Widowed')) %>%
+    mutate(marital_status = fct_drop(marital_status)) %>%
+    ggplot(aes(x = age, colour = marital_status, linetype = marital_status)) +
+    geom_density() +
+    scale_colour_brewer(palette = 'Dark2')
+```
+
+Overlaid density plots give you good information about distribution shape: where populations are dense and where they are sparse, whether the populations are separated or overlap.
+
+However, they lose information about the relative size of each population. This is because each individual density plot is scaled to have unit area.
+
+This has the advantage of improving the legibility of each individual distribution, but can fool you into thinking that all the populations are about the same size. In fact, the superimposed density plots above can also fool you into thinking that the widowed population becomes greater than the never married population after age 55, which is actually not true.
+
+
+To retain information about the relative size of each population, use histograms. Histograms don't superimpose well, so you can use the `facet_wrap()` command with `geom_histogram()`.
+
+You can also produce a histogram version of the shadow plot, using the `ShadowHist()` function from `WVPlots`.
+
+```{r shadow_histogram, fig.height = 10, fig.width = 6}
+customer_data %>% 
+    ShadowHist(
+        "age",
+        "marital_status",
+        "Age distribution for never married vs. widowed populations",
+        binwidth=5
+    )
+
+```
+
+```{r age_density_by_marital_status}
+customer_data %>% 
+    ggplot(aes(x=age)) +
+    geom_density() + facet_wrap(~marital_status) +
+    labs(y = NULL)
+```
+
+Again, these density plots give you good information about distribution shape, but they lose information about the relative size of each population.
