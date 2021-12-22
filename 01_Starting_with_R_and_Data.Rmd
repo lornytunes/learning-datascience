@@ -33,6 +33,8 @@ credit_data <- read.table(
 colnames(credit_data) <- credit_data_colnames
 ```
 
+### Lookups
+
 ```{r transform_credit_data_base}
 
 for(ci in colnames(credit_data)) {
@@ -45,6 +47,52 @@ credit_data$Good_Loan <- as.factor(ifelse(credit_data$Good_Loan == 1, 'GoodLoan'
 
 ```{r summary_credit_data_base}
 summary(credit_data)
+```
+
+What just happened?
+
+```{r reload_credit_data}
+credit_data <- read.table(
+    'data/credit_data.txt',
+    sep  =  " ",
+    stringsAsFactors = FALSE,
+    header = FALSE
+)
+colnames(credit_data) <- credit_data_colnames
+```
+
+
+This works because `credit_data_mapping` is a named vector:
+
+```{r credit_data_mapping_names}
+names(credit_data_mapping)
+```
+
+These names correspond to their decoded values in the vector itself:
+
+```{r credit_data_mapping_values}
+as.character(credit_data_mapping)
+```
+Thus we can use the names as a lookup to their decoded values
+
+```{r credit_data_mapping_lookup}
+credit_data_mapping["A11"]
+```
+
+And the lookups can be a vector of values
+
+```{r credit_data_mapping_lookups}
+head(credit_data_mapping[credit_data$Purpose], 10)
+```
+These decoded values can then be cast as a factor:
+
+```{r credit_data_mapping_factor}
+fct_count(factor(credit_data$Purpose), sort=TRUE)
+```
+
+
+```{r credit_data_mapping_lookups_factor}
+fct_count(factor(credit_data_mapping[credit_data$Purpose]), sort=TRUE)
 ```
 
 
