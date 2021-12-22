@@ -1,0 +1,613 @@
+---
+title: "Choosing and evaluating models"
+output: github_document
+---
+
+```{r setup, echo = FALSE, include = FALSE, message=FALSE}
+library(tidyverse)
+library(WVPlots)
+options(digits = 4)
+```
+
+## Evaluating classification models
+
+### Load the spam data
+
+It is standard terminology to refer to datums that are in the class of interest as positive instances, and those not in the class of interest as negative instances. In this scenario, spam emails are positive instances, and non-spam emails are negative instances.
+
+
+```{r spam_data_etl}
+spam_data <- read_tsv(
+    'data/spam.tsv',
+    col_types = cols(
+        rgroup = col_integer(),
+        spam = col_factor(levels = c('non-spam', 'spam')),
+        capital.run.length.longest = col_integer(),
+        capital.run.length.total = col_integer()
+    )
+)
+spam_data <- spam_data %>% 
+    select(rgroup, everything(), spam)
+
+spam_data <- spam_data %>% 
+    mutate(is_spam = spam == 'spam')
+
+```
+
+```{r load_spam_data}
+# we want to predict spam, so non-spam = 0, spam = 1
+prop.table(xtabs(~is_spam, data = spam_data))
+```
+
+
+### Building and applying a logistic regression spam model
+
+```{r, spam_logistic_model_train_test_split, warning=FALSE}
+# split into training and test
+spam_train <- spam_data %>% 
+    filter(rgroup >= 10) %>% 
+    select(-rgroup)
+spam_test <- spam_data %>% 
+    filter(rgroup < 10) %>% 
+    select(-rgroup)
+```
+
+```{r logistic_models_vars_and_formula}
+# get our predictor variables (all columns except our response variables and the rgroup indicator variable)
+spam_vars <- setdiff(colnames(spam_data), list('spam', 'is_spam', 'rgroup'))
+
+spam_formula <- as.formula(
+    paste(
+        'is_spam',
+        paste(spam_vars, collapse = ' + '),
+        sep = ' ~ '
+    )
+)
+```
+
+
+```{r spam_logistic_model}
+spam_model <- glm(
+    spam_formula,
+    family = binomial(link = 'logit'),
+    data = spam_train
+)
+
+summary(spam_model)
+```
+
+
+
+```{r logistic_models_cleanup}
+rm(spam_vars, spam_formula)
+```
+
+
+
+### Add classifications
+
+```{r spam_model_add_predictions}
+spam_train <- spam_train %>% 
+    modelr::add_predictions(spam_model, type = 'response')
+spam_test <- spam_test %>% 
+    modelr::add_predictions(spam_model, type = 'response')
+
+```
+
+### View classifications
+
+```{r, spam_classificatino_plot, warning=FALSE}
+spam_train %>% 
+    arrange(desc(pred)) %>% 
+    mutate(r = row_number(), actual = as.integer(spam) - 1) %>% 
+    ggplot(aes(x = r, y = actual)) +
+    geom_point(aes(colour = spam), alpha = 1/3) +
+    geom_line(aes(y = pred), colour = 'black', linetype = 'dashed') +
+    geom_smooth(
+        method = 'glm', se = FALSE, method.args = list(family = 'binomial')
+    ) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(x = NULL, y = NULL)
+```
+
+### Confusion Matrix
+
+The confusion matrix is a table counting how often each combination of known outcomes (the truth) occurred in combination with each prediction type.
+
+```{r spam_confusion_matrix}
+spam_test %>% 
+    slice(c(7, 35, 224, 327)) %>% 
+    select(spam, pred)
+
+
+
+cm_spam <- table(
+    actual = spam_test$spam,
+    prediction = ifelse(spam_test$pred > 0.5, "spam", "non-spam")
+)
+cm_spam
+
+```
+
+
+#### Accuracy
+
+`(TP + TN) / (TP + FP + TN + FN)`
+
+```{r spam_accuracy}
+sum(diag(cm_spam)) / sum(cm_spam)
+```
+
+#### Precision
+
+`TP / (TP + FP)`
+
+precision is how often a positive indication turns out to be correct. 
+
+Its a function of the *predicted* values
+
+```{r spam_precision}
+prop.table(cm_spam, margin = 2)
+```
+
+So 8% of what was flagged as spam was in fact not spam.
+
+#### Recall
+
+`TP / (TP + FN)`
+
+The companion score to precision is recall. Recall answers the question, “Of all the spam in the email set, what fraction did the spam filter detect?” 
+
+Recall is the ratio of true positives over all actual positives. It is a function of the *actual* values.
+
+```{r spam_recall}
+prop.table(cm_spam, margin = 1)
+```
+
+So about 12% of the spam email we receive will make it into our inbox.
+
+
+It’s important to remember this: precision is a measure of _confirmation_ (when the classifier indicates positive, how often it is in fact correct), and recall is a measure of _utility_ (how much the classifier finds of what there actually is to find).
+
+
+#### F1
+
+The F1 score measures a trade-off between precision and recall. It is 1 for classifiers with perfect precision and recall and 0 for classifiers that have low precision or recall (or both)
+
+```{r spam_f1}
+precision <- prop.table(cm_spam, margin = 1)[2, 2]
+recall <- prop.table(cm_spam, margin = 2)[2, 2]
+((2 * precision * recall) / (precision + recall))
+rm(precision, recall)
+```
+
+
+#### Sensitivity and Specificity
+
+```{r define_performance_routines}
+get_performance <- function(sTest) { 
+    proportion <- mean(sTest$spam == "spam")
+    cm <- table(
+        truth = sTest$spam,
+        prediction = ifelse(sTest$pred>0.5, "spam","non-spam")
+    )
+    
+    precision <- cm[2,2]/sum(cm[,2])
+    recall <- cm[2,2]/sum(cm[2,])
+    list(
+        spam_proportion = proportion,
+        cm = cm,
+        precision = precision,
+        recall = recall
+    )
+}
+```
+
+
+```{r sensitivity_and_specificity}
+# print the confusion matrix, precision and recall of the filter on a test set
+
+set.seed(234641)
+
+# pull out 100 records at random
+pull_out_ix <- sample.int(nrow(spam_test), 100, replace=FALSE)
+removed = spam_test %>% 
+    slice(pull_out_ix)
+
+# Look at performance on a test set with the same proportion of spam as the training data
+get_performance(slice(spam_test, -pull_out_ix))
+
+# add back only additional spam
+# test set has higher proportion of spam than the training set
+get_performance(bind_rows(
+    spam_test,
+    removed %>% filter(spam == 'spam')
+))
+
+# adds back only non-spam
+# so the test set has a lower proportion of spam than the training set
+get_performance(bind_rows(
+    spam_test,
+    removed %>% filter(spam == 'non-spam')
+))
+
+rm(pull_out_ix, removed)
+
+```
+
+Note that the recall of the filter is the same in all three cases: about 88%.
+
+When the data has more spam than the filter was trained on, the filter has higher precision, which means it throws a lower proportion of non-spam email out. This is good! However, when the data has less spam than the filter was trained on, the precision is lower, meaning the filter will throw out a higher fraction of non-spam email.
+
+This is undesirable. Because there are situations where a classifier or filter may be used on populations where the prevalence of the positive class (in this example, spam) varies, it’s useful to have performance metrics that are independent of the class prevalence. 
+
+One such pair of metrics is sensitivity and specificity.
+
+This pair of metrics is common in medical research, because tests for diseases and other conditions will be used on different populations, with different prevalence of a given disease or condition. Sensitivity is also called the true positive rate and is exactly equal to recall.
+
+Specificity is also called the true negative rate: it is the ratio of true negatives to all negatives.
+
+```{r}
+(actual_props <- prop.table(cm_spam, margin = 1))
+# specificity
+actual_props[1,1]
+```
+
+
+### Double density plots
+
+```{r spam_double_density_plots}
+spam_train %>% 
+    ggplot(aes(x = pred, fill = spam, linetype = spam)) +
+    geom_density(alpha = 0.5) +
+    ggtitle('Distribution of scores for training data')
+
+spam_test %>% 
+    ggplot(aes(x = pred, fill = spam, linetype = spam)) +
+    geom_density(alpha = 0.5) +
+    ggtitle('Distribution of scores for test data')
+```
+
+
+```{r spam_double_density_plot_wv}
+
+spam_test %>% 
+    DoubleDensityPlot(
+        xvar = 'pred',
+        truthVar = 'spam',
+        title = 'Distribution of scores for spam filter'
+    )
+```
+
+### ROC Curves
+
+```{r confusion_matrix_helper_functions}
+confusion_matrix <- function(actual, predicted, threshold) {
+    table(
+        actual = actual,
+        prediction = factor(
+            ifelse(predicted > threshold, "spam", "non-spam"),
+            levels = c('non-spam', 'spam')
+        )
+    )
+}
+
+cm_summary <- function(threshold, cm) {
+    metrics <- tibble(
+        threshold = threshold,
+        TP = cm[2, 2],
+        FP = cm[1, 2],
+        TN = cm[1, 1],
+        FN = cm[2, 1]
+    )
+    return(metrics)
+}
+```
+
+
+```{r confusion_matrix_metrics}
+with(spam_test, confusion_matrix(spam, pred, 0.5))
+# neutral
+cm_50 <- with(spam_test, confusion_matrix(spam, pred, 0.5))
+# hawk - more likely to classify as spam
+cm_25 <- with(spam_test, confusion_matrix(spam, pred, 0.25))
+# dove - less likely to classify as spam
+cm_75 <- with(spam_test, confusion_matrix(spam, pred, 0.75))
+# etc
+cm_summary(0.5, cm_50)
+
+cm_df <- bind_rows(
+    map(
+        seq(0, 1, 0.05),
+        ~cm_summary(
+            ., confusion_matrix(spam_test$spam, spam_test$pred, .)
+        )
+    )
+)
+# sensitivity is recall, specificity is the true negative rate
+# 1 - specificity is knowns as the false positive rate
+cm_df <- cm_df %>% 
+    mutate(
+        precision = TP / (TP + FP),
+        recall = TP / (TP + FN),
+        accuracy = (TP + TN) / (TP + FP + TN + FN)
+    ) %>% 
+    mutate(
+        precision = ifelse(is.nan(precision), 1, precision),
+        specificity = TN / (TN + FP),
+        fp_rate = 1 - specificity
+    )
+
+
+cm_df %>% 
+    ggplot(aes(x = recall, y = precision)) +
+    geom_point() +
+    geom_line() +
+    scale_x_continuous(limits = c(0, 1)) +
+    scale_y_continuous(limits = c(0, 1))
+rm(cm_50, cm_75, cm_25)
+```
+
+#### Another look at the tradeoffs
+
+```{r confusion_matrix_rate_plot, fig.width = 12}
+cm_df %>% 
+    pivot_longer(cols = c(precision, recall, accuracy), names_to = 'metric') %>% 
+    ggplot(aes(x = threshold, y = value, colour = metric, linetype = metric)) +
+    geom_line() +
+    scale_x_continuous(breaks = seq(0, 1, 0.05), limits = c(0, 1)) +
+    scale_y_continuous(limits = c(0, 1)) +
+    labs(y = NULL)
+```
+
+
+
+#### Confusion matrix in `dplyr`
+
+```{r}
+confusion_matrix_dp <- function(df, threshold) {
+    df %>% 
+    mutate(
+        prediction = factor(
+            ifelse(pred > threshold, 'spam', 'non-spam'),
+            levels = c('non-spam', 'spam')
+        )
+    ) %>% 
+    select(actual = spam, prediction) %>% 
+    group_by(actual, prediction, .drop = FALSE) %>% 
+    summarise(n = n(), .groups = 'drop') %>% 
+    pivot_wider(
+        names_from = 'prediction',
+        values_from = 'n'
+    )
+}
+
+```
+
+
+### ROC Plots
+
+```{r}
+cm_df %>% 
+    select(threshold, tp_rate = recall, fp_rate) %>% 
+    ggplot(aes(x = fp_rate, y = tp_rate, colour = threshold)) +
+    geom_line()
+
+
+```
+
+
+```{r spam_roc_plot, fig.width = 12}
+ROCPlot(
+    spam_test,
+    xvar = 'pred',
+    truthVar = 'spam',
+    truthTarget = 'spam',
+    title = 'Spam filter test performance'
+)
+```
+
+
+### AUC
+
+```{r}
+sigr::calcAUC(spam_test$pred, spam_test$spam == 'spam')
+```
+
+
+## Scoring Models
+
+```{r crickets_load}
+crickets <- read_csv(
+    'data/crickets.csv'
+)
+cricket_model <- lm(temperatureF ~ chirp_rate, data = crickets)
+
+crickets <- crickets %>% 
+    modelr::add_predictions(cricket_model) %>%
+    modelr::add_residuals(cricket_model)
+
+crickets %>% 
+    ggplot(aes(x = chirp_rate, y = temperatureF)) +
+    geom_point() +
+    geom_line(aes(y = pred), colour = 'orangered') +
+    geom_linerange(aes(ymin = pred, ymax = temperatureF), linetype = 'dotdash')
+
+    ```
+
+
+### Root Mean Square Error
+
+```{r crickets_rmse}
+crickets <- crickets %>% 
+    mutate(error_sq = resid ^ 2)
+
+crickets %>% 
+    summarise(
+        RMSE = sqrt(mean(error_sq))
+    )
+
+# model variance
+crickets %>% 
+    summarise(
+        variance = sum(error_sq)
+    )
+```
+
+The RMSE is in the same units as the outcome: since the outcome (temperature) is in degrees Fahrenheit, the RMSE is also in degrees Fahrenheit.
+
+Here the RMSE tells you that the model’s predictions will typically (that is, on average) be about 3.6 degrees off from the actual temperature.
+
+Suppose that you consider a model that typically predicts the temperature to within 5 degrees to be “good.” Then, congratulations! You have fit a model that meets your goals.
+
+RMSE is a good measure, because it is often what the fitting algorithms you’re using are explicitly trying to minimize. In a business setting, a good RMSE-related goal would be “We want the RMSE on account valuation to be under \$1,000 per account.”
+
+The quantity mean(error_sq) is called the mean squared error. We will call the quantity sum(error_sq) the sum squared error, and also refer to it as the model’s variance.
+
+### R-Squared
+
+```{r crickets_rsquared}
+# the sum of the error_sq is the models sum squared error, or variance
+crickets %>% 
+    # square error of terms from the null model
+    mutate(delta_sq = (mean(temperatureF) - temperatureF) ^ 2) %>% 
+    summarise(R2 = 1 - (sum(error_sq) / sum(delta_sq)))
+```
+
+As R-squared is formed from a ratio comparing your model’s variance to the total variance, you can think of R-squared as a measure of how much variance your model “explains.” R-squared is also sometimes referred to as a measure of how well the model “fits” the data, or its “goodness of fit.”
+
+The best possible R-squared is 1.0, with near-zero or negative R-squareds being horrible.
+
+Some other models (such as logistic regression) use deviance to report an analo- gous quantity called pseudo R-squared.
+
+A good statement of a R-squared business goal would be “We want the model to explain at least 70% of variation in account value.”
+
+## Log Liklihood
+
+If `spam = 1` then its `log(p)`. If `spam = 0` then its `log(1-p)`
+
+```{r}
+probs <- c(0.9, 0.8, 0.2, 0.1)
+# spam = 1. Rewards high probabilities, penalizes low probabilities
+log(probs)
+# spam = 0. The converse. Penalizes high probabilities, rewards low ones
+log(1 - probs)
+rm(probs)
+```
+
+
+```{r calculating_log_liklihoods_and_deviance}
+log_liklihoods <- function(y, py) {
+    values <- y * log(py) + (1-y) * log(1 - py)
+    # log(0) is 0
+    values[is.nan(values)] <- 0
+    return(values)
+}
+devience <- function(liklihoods) {
+    -2 * sum(liklihoods)
+}
+```
+
+
+```{r log_liklihood_definition}
+
+# contributions
+# [spam,not spam, spam, not spam]
+# [match, match, mismatch, mismatch]
+(contributions <- log_liklihoods(
+    c(1, 0, 1, 0),
+    c(0.98, 0.88, 0.02, 0.98)
+))
+sum(contributions)
+rm(contributions)
+
+```
+
+```{r spam_log_liklihood}
+spam_test %>% 
+    mutate(
+        pred = round(pred, 4)
+    ) %>% 
+    select(spam, is_spam, pred) %>% 
+    sample_n(10)
+
+sum(log_liklihoods(
+    # class labels. 1 = spam, 0 = non-spam
+    spam_test$is_spam,
+    spam_test$pred))
+```
+
+
+The log likelihood is useful for comparing multiple probability models on the same test dataset.
+
+Because the log likelihood is an unnormalized sum, its magnitude implicitly depends on the size of the dataset, so you can’t directly compare log likelihoods that were computed on different datasets.
+
+When comparing multiple models, you generally want to prefer models with a larger (that is, smaller magnitude) log likelihood.
+
+
+### Computing the null model log liklihood
+
+```{r null_model_log_liklihood}
+(p_null <- mean(spam_train$is_spam))
+sum(log_liklihoods(
+    spam_test$is_spam,
+    p_null
+))
+
+```
+
+
+The spam model assigns a log likelihood of -135 to the test set, which is much better than the null model’s -307.
+
+### Deviance
+
+```{r spam_deviance_by_hand}
+
+
+# null devience
+spam_model$null.deviance
+devience(log_liklihoods(
+    spam_train$is_spam,
+    p_null
+))
+# residual devience
+spam_model$deviance
+devience(log_liklihoods(
+    spam_train$is_spam,
+    spam_train$pred
+))
+        
+```
+
+### Devience using `sigr`
+
+```{r}
+sigr::calcDeviance(
+    p_null,
+    spam_train$is_spam
+)
+sigr::calcDeviance(
+    spam_train$pred,
+    spam_train$is_spam
+)
+
+```
+
+
+```{r spam_test_deviance}
+(deviance <- sigr::calcDeviance(
+    spam_test$pred,
+    spam_test$is_spam
+))
+(null_deviance <- sigr::calcDeviance(
+    p_null,
+    spam_test$is_spam
+))
+(pseudo_r2 <- 1 - deviance / null_deviance)
+```
+
+The lower the deviance, the better the model. We’re most concerned with ratios of deviance, such as the ratio between the null deviance and the model deviance.
+
+These deviances can be used to calculate a pseudo R-squared. Think of the null deviance as how much variation there is to explain, and the model deviance as how much was left unexplained by the model.
+
+You want a pseudo R-squared that is close to 1.
