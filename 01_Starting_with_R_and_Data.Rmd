@@ -1,6 +1,6 @@
 ---
 title: "Getting started with R and Data"
-output: html_document
+output: github_document
 ---
 
 ```{r setup, include = FALSE, echo = FALSE}

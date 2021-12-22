@@ -1,0 +1,247 @@
+---
+title: "Managing Data"
+output: github_document
+---
+
+
+```{r setup, include = FALSE, echo = FALSE}
+library(tidyverse)
+options(digits = 3)
+```
+
+```{r load_customer_data}
+customer_data <- read_rds('data/customer_data.rds')
+skimr::skim(customer_data)
+```
+
+
+Treating the age and income variables
+
+- 001: Included in rent or condo fee
+- 002: Included in electricitypayment
+- 003: no charge or gas not used
+
+```{r dealing_with_sentinel_values}
+customer_data <- customer_data %>% 
+    mutate(
+        age = na_if(age, 0),
+        # convert negative incomes to NA
+        income = ifelse(income < 0, NA, income),
+        # create 3 indicator variables of gas usage
+        gas_with_rent = (gas_usage == 1),
+        gas_with_electricity = (gas_usage == 2),
+        no_gas_bill = (gas_usage == 3),
+        gas_usage = ifelse(gas_usage < 4, NA, gas_usage)
+    )
+```
+
+
+Missing values with `vtreat`
+
+```{r missing_value_functions}
+na_counts <- function(df) {
+    map_int(df, ~sum(is.na(.x)))
+}
+
+na_summary <- function(df) {
+    map(df, ~sum(is.na(.x)))
+}
+```
+
+```{r missing_value_counts}
+na_counts(customer_data)
+```
+
+
+```{r create_treatment_plan_for_missing_values}
+treatment_plan <- vtreat::design_missingness_treatment(
+    customer_data,
+    varlist = setdiff(colnames(customer_data), c('custid', 'health_ins'))
+)
+customer_prepared <- vtreat::prepare(
+    treatment_plan,
+    customer_data
+)
+customer_prepared
+```
+
+```{r summarise_differences_in_nas}
+# convert two lists to two rows in a data frame
+list(
+    original = na_summary(customer_data),
+    prepared = na_summary(customer_prepared)
+) %>% bind_rows(.id = 'custid')
+```
+
+
+
+Examining the data treatment
+
+```{r examining_treated_data}
+# rows with no housing type defined
+ht_missing <- which(is.na(customer_data$housing_type))
+customer_data %>% 
+    slice(ht_missing) %>% 
+    select(custid, is_employed, num_vehicles, housing_type, health_ins) %>% 
+    head()
+
+customer_prepared %>% 
+    slice(ht_missing) %>% 
+    select(
+        custid,
+        is_employed,
+        is_employed_isBAD,
+        num_vehicles,
+        num_vehicles_isBAD,
+        housing_type,
+        health_ins
+    ) %>% 
+    head()
+rm(ht_missing)
+
+```
+
+Verify the expected number of vehicles and employment rate
+
+```{r verify_imputed_means}
+customer_data %>% 
+    summarise_at(vars(num_vehicles, is_employed), mean, na.rm = TRUE)
+```
+
+## Data Transformations
+
+### Normalizion
+
+Normalization (or rescaling) is useful when absolute quantities are less meaningful than relative ones.
+
+Example Suppose you are considering the use of income as an input to your insurance model.
+
+The cost of living will vary from state to state, so what would be a high salary in one region could be barely enough to scrape by in another.
+
+Because of this, it might be more meaningful to normalize a customer’s income by the typical income in the area where they live.
+
+This is an example of a relatively simple (and common) transformation.
+
+
+```{r load_median_income}
+# load the lookup table
+median_income <- read_rds('data/median_income.rds')
+median_income %>% arrange(desc(median_income)) %>%  head(n = 10)
+
+```
+
+Normalize the income
+
+```{r normalizing_the_income}
+customer_prepared <- customer_prepared %>% 
+    left_join(median_income, by = 'state_of_res') %>% 
+    mutate(income_normalized = income / median_income)
+
+
+customer_prepared %>% 
+    select(income, median_income, income_normalized) %>% 
+    head()
+
+summary(customer_prepared$income_normalized)
+```
+
+Looking at the results you see that customers with an income higher than the median income of their state have an `income_normalized` value larger than 1, and customers with an income lower than the median income of their state have an `income_normalized` value less than 1.
+
+Because customers in different states get a different normalization, we call this a conditional transform.
+
+A long way to say this is that _the normalization is conditioned on the customer’s state of residence_.
+
+We would call scaling all the customers by the same value an unconditioned transform.
+
+Another example, you might be less interested in a customer’s absolute age than you are in how old or young they are relative to a _typical_ customer. Let’s take the mean age of your customers to be the typical age.
+
+```{r}
+summary(customer_prepared$age / mean(customer_prepared$age))
+```
+
+
+### Centering and scaling
+
+```{r scaled_age}
+mean_age <- mean(customer_prepared$age)
+sd_age <- sd(customer_prepared$age)
+customer_prepared <- customer_prepared %>% 
+    mutate(scaled_age = (age - mean_age) / sd_age)
+
+# typical
+customer_prepared %>% 
+    select(age, scaled_age) %>% 
+    filter(abs(age - mean_age) < sd_age) %>% 
+    head()
+
+# non-typical
+customer_prepared %>% 
+    select(age, scaled_age) %>% 
+    filter(abs(age - mean_age) > sd_age) %>% 
+    head()
+```
+
+```{r scale_age_cleanup}
+rm(mean_age, sd_age)
+```
+
+
+Use the built in `scale` function
+
+```{r compare_with_base_scale}
+head(scale(customer_prepared$age))
+head(customer_prepared$scaled_age)
+    
+```
+
+```{r scaled_features}
+data_scaled <- customer_prepared %>% 
+    select(age, income, num_vehicles, gas_usage) %>% 
+    scale(center = TRUE, scale = TRUE)
+summary(data_scaled)
+# means
+(scaled_means <- attr(data_scaled, 'scaled:center'))
+# sds
+(scaled_sds <- attr(data_scaled, 'scaled:scale'))
+```
+
+
+Treating new data
+
+```{r scaling_using_vtreat}
+new_data <- customer_data %>% 
+    sample_n(100)
+# clean using the treatment plan from the original dataset
+new_data <- vtreat::prepare(treatment_plan, new_data)
+# scale using the centers and scaling factors from the original dataset
+new_data_scaled <- new_data %>% 
+    select(age, income, num_vehicles, gas_usage) %>% 
+    scale(center = scaled_means, scale = scaled_sds)
+
+summary(new_data_scaled)
+```
+
+### Log transformations for skewed and wide distributions
+
+```{r plot_log_income, fig.width = 10, fig.height = 7}
+customer_prepared %>% 
+    ggplot(aes(x = income)) +
+    geom_density() +
+    scale_x_log10(labels = scales::dollar)
+
+summary(customer_prepared$income)
+```
+
+
+Signed log
+
+```{r}
+signed_log10 <- function(x) {
+    # -1 to 1 is mapped to 0
+    ifelse(abs(x) <= 1, 0, sign(x) * log10(abs(x)))
+}
+```
+
+
+### Test and training splits
+
