@@ -304,8 +304,7 @@ cm_summary <- function(threshold, cm) {
 }
 ```
 
-
-```{r confusion_matrix_metrics}
+```{r test_confustion_matrix_helper_functions}
 with(spam_test, confusion_matrix(spam, pred, 0.5))
 # neutral
 cm_50 <- with(spam_test, confusion_matrix(spam, pred, 0.5))
@@ -315,7 +314,13 @@ cm_25 <- with(spam_test, confusion_matrix(spam, pred, 0.25))
 cm_75 <- with(spam_test, confusion_matrix(spam, pred, 0.75))
 # etc
 cm_summary(0.5, cm_50)
+rm(cm_50, cm_75, cm_25)
+```
 
+
+
+```{r confusion_matrix_metrics_with_a_range_of_thresholds}
+# create scores for a range of thresholds
 cm_df <- bind_rows(
     map(
         seq(0, 1, 0.05),
@@ -338,17 +343,21 @@ cm_df <- cm_df %>%
         fp_rate = 1 - specificity
     )
 
+cm_df
+```
 
+```{r plot_confusion_matrix_thresholds}
 cm_df %>% 
     ggplot(aes(x = recall, y = precision)) +
     geom_point() +
     geom_line() +
     scale_x_continuous(limits = c(0, 1)) +
     scale_y_continuous(limits = c(0, 1))
-rm(cm_50, cm_75, cm_25)
+
 ```
 
-#### Another look at the tradeoffs
+
+### Another look at the tradeoffs
 
 ```{r confusion_matrix_rate_plot, fig.width = 12}
 cm_df %>% 
@@ -364,7 +373,7 @@ cm_df %>%
 
 #### Confusion matrix in `dplyr`
 
-```{r}
+```{r confusion_matrix_with_dplyr}
 confusion_matrix_dp <- function(df, threshold) {
     df %>% 
     mutate(
@@ -387,13 +396,11 @@ confusion_matrix_dp <- function(df, threshold) {
 
 ### ROC Plots
 
-```{r}
+```{r roc_plot}
 cm_df %>% 
     select(threshold, tp_rate = recall, fp_rate) %>% 
     ggplot(aes(x = fp_rate, y = tp_rate, colour = threshold)) +
     geom_line()
-
-
 ```
 
 
@@ -410,7 +417,7 @@ ROCPlot(
 
 ### AUC
 
-```{r}
+```{r auc_with_sigr}
 sigr::calcAUC(spam_test$pred, spam_test$spam == 'spam')
 ```
 
@@ -421,19 +428,25 @@ sigr::calcAUC(spam_test$pred, spam_test$spam == 'spam')
 crickets <- read_csv(
     'data/crickets.csv'
 )
+```
+
+```{r crickets_model}
 cricket_model <- lm(temperatureF ~ chirp_rate, data = crickets)
 
 crickets <- crickets %>% 
     modelr::add_predictions(cricket_model) %>%
     modelr::add_residuals(cricket_model)
 
+```
+
+```{r crickets_model_plot}
 crickets %>% 
     ggplot(aes(x = chirp_rate, y = temperatureF)) +
     geom_point() +
     geom_line(aes(y = pred), colour = 'orangered') +
     geom_linerange(aes(ymin = pred, ymax = temperatureF), linetype = 'dotdash')
+```
 
-    ```
 
 
 ### Root Mean Square Error
@@ -444,12 +457,7 @@ crickets <- crickets %>%
 
 crickets %>% 
     summarise(
-        RMSE = sqrt(mean(error_sq))
-    )
-
-# model variance
-crickets %>% 
-    summarise(
+        RMSE = sqrt(mean(error_sq)),
         variance = sum(error_sq)
     )
 ```
@@ -498,6 +506,8 @@ rm(probs)
 
 ```{r calculating_log_liklihoods_and_deviance}
 log_liklihoods <- function(y, py) {
+    # y is a vector of outcomes (ones and zeros)
+    # py is a vector of their predicted probabilities
     values <- y * log(py) + (1-y) * log(1 - py)
     # log(0) is 0
     values[is.nan(values)] <- 0
