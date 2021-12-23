@@ -1,0 +1,357 @@
+---
+title: "Linear Regression"
+output: github_document
+---
+
+
+```{r setup, include = FALSE, echo = FALSE}
+library(tidyverse)
+options(digits = 4)
+```
+
+
+## PUMS data
+
+```{r loading_pums}
+pums <- read_rds('data/pums.rds')
+```
+
+### Visualize our response variable
+
+Personal income (`PINCP`)
+
+```{r pums_pincp_plot}
+summary(pums$PINCP)
+pums %>% 
+    ggplot(aes(x = PINCP)) +
+    geom_histogram(binwidth = 10000, colour = 'white') +
+    scale_x_continuous(
+        'Personal Income (dollars)',
+        labels = scales::label_comma()
+    )
+
+pums %>% 
+    ggplot(aes(x = PINCP)) +
+    geom_histogram(binwidth = 1/10, colour = 'white') +
+    scale_x_log10(
+        'Personal Income',
+        labels = scales::label_dollar()
+    )
+```
+
+We'll do a linear regression on `log10(PINCP)`
+
+```{r add_log10_of_the_response_variable}
+pums <- pums %>% 
+    mutate(logPINCP = log10(PINCP))
+```
+
+
+
+Base R
+
+```{r test_train_split_base}
+set.seed(3454351)
+gp <- runif(nrow(pums))
+pums_train <- subset(pums, gp >= 0.5)
+pums_test <- subset(pums, gp < 0.5)
+
+rm(gp)
+```
+
+Tidy
+
+```{r test_train_split_tidy}
+set.seed(3454351)
+gp <- runif(nrow(pums))
+pums_train <- pums %>% 
+    slice(which(gp >= 0.5))
+pums_test <- pums %>% 
+    slice(which(gp < 0.5))
+```
+
+
+
+```{r pums_linear_model}
+# COW: Class of Worker, SCHL: Level of schooling
+pums_model <- lm(
+    logPINCP ~ AGEP + SEX + COW + SCHL,
+    data = pums_train
+)
+```
+
+Model Predictions
+
+```{r pums_model_metrics}
+modelr::rmse(pums_model, pums_train)
+modelr::rmse(pums_model, pums_test)
+```
+
+Base R
+
+```{r add_predictions_base, include = FALSE}
+pums_train$predLogPINCP <- predict(pums_model, newdata = pums_train)
+```
+
+
+Tidy
+
+```{r pums_predictions_tidy}
+pums_train <- pums_train %>% 
+    modelr::add_predictions(pums_model, var = 'predLogPINCP')
+pums_test <- pums_test %>% 
+    modelr::add_predictions(pums_model, var = 'predLogPINCP')
+```
+
+Visualize predictions
+
+```{r pums_prediction_plot}
+pums_test %>% 
+    ggplot(aes(x = predLogPINCP, y = logPINCP)) +
+    geom_point(alpha = 0.2, colour = 'darkgray') +
+    geom_smooth(color = 'darkblue') +
+    # x = y, the perfect prediction
+    geom_line(
+        aes(x = log10(PINCP), y = log10(PINCP)),
+        colour = 'blue', linetype = 2
+    ) +
+    coord_cartesian(
+        xlim = c(4, 5.25),
+        ylim = c(3.5, 5.5)
+    ) +
+    labs(x = 'predicted', y = 'actual')
+```
+
+
+Plotting residuals income as a function of predicted log income
+
+```{r}
+# actual - predicted
+pums_test <- pums_test %>% 
+    modelr::add_residuals(pums_model)
+
+# try reversing x and y
+pums_test %>% 
+    ggplot(aes(x = predLogPINCP, y = resid)) +
+    geom_point(alpha = 0.2, colour = 'darkgray') +
+    geom_smooth(colour = 'darkblue') +
+    labs(y = 'Residual error (predition - actual)')
+```
+
+### R-squared
+
+
+```{r}
+rsq <- function(actual, fitted) {
+    1 - sum((actual - fitted) ^ 2) / sum((actual - mean(actual)) ^ 2)
+}
+
+rsq(pums_train$logPINCP, pums_train$predLogPINCP)
+
+# or better
+modelr::rsquare(pums_model, pums_train)
+modelr::rsquare(pums_model, pums_test)
+
+```
+
+R-squared can be thought of as what fraction of the y variation is explained by the model.
+
+You want R-squared to be fairly large (1.0 is the largest you can achieve) and R-squareds that are similar on test and training. A significantly lower R-squared on test data is a symptom of an overfit model that looks good in training and won’t work in production. 
+
+In this case, the R-squareds were about 0.3 for both the training and test data. We’d like to see R-squareds higher than this (say, 0.7–1.0). So the model is of low quality, but not overfit.
+
+### RMSE
+
+```{r}
+rmse <- function(actual, fitted) {
+    sqrt(mean((actual - fitted) ^ 2))
+}
+rmse(pums_train$logPINCP, pums_train$predLogPINCP)
+
+modelr::rmse(pums_model, pums_train)
+modelr::rmse(pums_model, pums_test)
+```
+
+You can think of the RMSE as a measure of the width of the data cloud around the line of perfect prediction. We’d like RMSE to be small, and one way to achieve this is to introduce more useful, explanatory variables.
+
+
+### Coefficients
+
+There are eight coefficients that start with `SCHL`
+
+```{r pums_model_coefficients}
+coeffs <- broom::tidy(pums_model)
+coeffs <- coeffs %>% 
+    mutate(p.value = round(p.value, 4))
+coeffs
+```
+
+#### Continuous Variables
+
+`AGEP` is a continuous variable with coefficient 0.0116. You can interpret this as saying that a one-year increase in age adds a 0.0116 bonus to log income; in other words, an increase in age of one year corresponds to an increase of income of $10^{0.0116}$, or a factor of 1.027 - about a 2.7% increase in income (all other variables being equal).
+
+
+#### Factors
+
+```{r pums_model_coefficients_high_school}
+term_levels <- tibble(term = str_c('SCHL', levels(pums$SCHL)))
+coeffs %>% 
+    filter(str_detect(term, '^SCHL')) %>% 
+    right_join(term_levels, by = 'term')
+rm(term_levels)
+```
+
+For example, in `SCHLBachelor's degree` we find the coefficient 0.36, which is read as
+
+> The model gives a `0.36` bonus to $log_{10}$ income for having a bachelor’s degree, relative to not having a high school degree.
+
+You can solve for the income ratio between someone with a bachelor’s degree and the equivalent person (same sex, age, and class of work) without a high school degree as follows:
+
+$$
+log_{10}(income\_bachelors) = log_{10}(income\_no\_hs\_degree) + 0.36 \\
+log_{10}(income\_bachelors) - log_{10}(income\_no\_hs\_degree) =  0.36 \\
+\frac{income\_bachelors}{income\_no\_hs\_degree} = 10^{0.36}
+$$
+
+
+This means that someone with a bachelor's degree will tend to have an income about $10^{0.36}$ or `r 10^0.36` times higher than the equivalent person without a high school degree.
+
+Under `SCHLRegular high school diploma`, we find the coefficient `0.11`. This is read as 
+
+> The model believes that having a bachelor’s degree tends to add 0.36–0.11 units to the predicted log income, relative to having a high school degree.
+
+$$
+log_{10}(income\_bachelors) - log_{10}(income\_no\_hs\_degree) =  0.36 \\
+log_{10}(income\_hs) - log_{10}(income\_no\_hs\_degree) =  0.11 \\
+log_{10}(income\_bachelors) - log_{10}(income\_hs) = 0.36 - 0.11 \\
+\frac{income\_bachelors}{income\_hs} = 10^{0.36 - 0.11}
+$$
+
+The modeled relation between the bachelor’s degree holder’s expected income and the high school graduate’s (all other variables being equal) is `10^(0.36 - 0.11)`, or about `1.8` times greater.
+
+The advice: college is worth it if you can find a job (remember that we limited the analysis to the fully employed, so this is assuming you can find a job).
+
+
+### Reading the Model summary
+
+```{r}
+summary(pums_model)
+```
+
+Recall that the residuals are the errors in prediction `actual - predicted`
+
+```{r}
+with(pums_train, summary(logPINCP - predLogPINCP))
+with(pums_test, summary(logPINCP - predLogPINCP))
+```
+
+
+Most of what you need to know about the quality of the model fit are in the residuals
+
+### Characterizing Coefficient Quality
+
+#### The Coefficients Table
+
+Each model coefficient forms a row of the summary coefficients table. The columns report the estimated coefficient, the uncertainty of the estimate, how large the coefficient is relative to the uncertainty, and how likely such a ratio would be due to mere chance.
+
+You set out to study income and the impact that getting a bachelor’s degree has on income. But you must look at all the coefficients to check for interfering effects. For example, the coefficient of `–0.108` for `SEXF` means that your model learned a penalty of –0.108 to `log10(PINCP)` for being female.
+
+The ratio of female income to male income is modeled to be $10^{-0.108}$: women earn 78% of what men earn, all other model parameters being equal. Note we said “all other model parameters being equal” not “all other things being equal.”
+
+That’s because we’re not modeling the number of years in the workforce (which age may not be a reliable proxy for) or occupation/industry type (which has a big impact on income).
+
+This model is not, with the features it was given, capable of testing if, on average, a female in the same job with the same number of years of experience is paid less.
+
+## Multiple Linear Regression
+
+
+```{r load_advertising}
+advertising <- read_rds('data/advertising.rds')
+```
+
+
+
+```{r lm_standalone}
+bind_rows(
+    broom::tidy(lm(sales ~ TV, data = advertising)),
+    broom::tidy(lm(sales ~ radio, data = advertising)),
+    broom::tidy(lm(sales ~ newspaper, data = advertising))
+) %>% 
+    filter(!term == '(Intercept)') %>% 
+    modify_if(is.numeric, round, digits = 3) 
+
+```
+
+Simple linear regression models for the Advertising data. Coefficients of the simple linear regression model for number of units sold on 
+
+A \$1,000 increase in spending on radio advertising is associated with an average increase in sales by around 203 units, while the same increase in spending on newspaper advertising is associated with an average increase in sales by around 55 units (Note that the sales variable is in thousands of units, and the radio and newspaper variables are in thousands of dollars).
+
+
+```{r advertising_multiple_regression}
+model <- lm(sales ~ TV + radio + newspaper, data = advertising)
+broom::tidy(model) %>% 
+    modify_if(is.numeric, round, digits = 3) %>% 
+    mutate(estimate = 1000 * estimate)
+```
+
+The multiple regression coefficient estimates when TV, radio, and newspaper advertising budgets are used to predict product sales using the Advertising data.
+
+We interpret these results as follows: for a given amount of TV and newspaper advertising, spending an additional \$1,000 on radio advertising leads to an increase in sales by approximately 189 units. Comparing these coefficient estimates to those in the standalone models, we notice that the multiple regression coefficient estimates for TV and radio are pretty similar to the simple linear regression coefficient estimates.
+
+However, while the newspaper regression coefficient in the standalone model was significantly non-zero, the coefficient estimate for newspaper in the multiple regression model is close to zero, and the corresponding p-value is no longer significant, with a value around 0.86.
+
+This illustrates that the simple and multiple regression coefficients can be quite different.
+
+This difference stems from the fact that in the simple regression case, the slope term represents the average effect of a `$1,000` increase in newspaper advertising, ignoring other predictors such as TV and radio. In contrast, in the multiple regression setting, the coefficient for newspaper represents the average effect of increasing newspaper spending by `$1,000` while holding TV and radio fixed.
+
+```{r advertising_correlation_matrix}
+round(cor(advertising), 2)
+
+```
+
+Notice that the correlation between radio and newspaper is 0.35. This reveals a tendency to spend more on newspaper advertising in markets where more is spent on radio advertising.
+ 
+Now suppose that the multiple regression is correct and newspaper advertising has no direct impact on sales, but radio advertising does increase sales. Then in markets where we spend more on radio our sales will tend to be higher, and as our correlation matrix shows, we also tend to spend more on newspaper advertising in those same markets.
+ 
+Hence, in a simple linear regression which only examines sales versus newspaper, we will observe that higher values of newspaper tend to be associated with higher values of sales, even though newspaper advertising does not actually affect sales. So newspaper sales are a surrogate for radio advertising; newspaper gets “credit” for the effect of radio on sales.
+
+```{r}
+# residual standard error, r2 and F-statistic
+broom::glance(model) %>% 
+    select(df.residual, r.squared, statistic)
+```
+
+
+### Removing the additive assumption
+
+```{r advertising_lm_interactive}
+# also: sales ~ TV * radio
+model <- lm(sales ~ TV + radio + TV:radio, data = advertising)
+broom::tidy(model) %>% 
+    modify_if(is.numeric, round, digits = 4) %>% 
+    mutate(estimate = 1000 * estimate)
+
+```
+
+$$
+sales = \beta_0 + \beta_1 \times TV + \beta_2 \times radio + \beta_3 \times (TV \times radio) + \epsilon
+$$
+
+
+This can be rewritten like this
+
+$$
+sales = \beta_0 + (\beta_1 + \beta_3 \times radio) \times TV + \beta_2 \times radio  + \epsilon \\
+sales = \beta_0 + \hat{\beta_1} \times TV + \beta_2 \times radio  + \epsilon
+$$
+
+Where $\hat{\beta_1} = \beta_1 + \beta_3radio$
+
+Since $\hat{\beta_1}$ changes with radio the effect of TV on sales is no longer constant.
+
+We can interpret $\beta_3$ as the increase in the effectiveness of TV advertising for a one unit increase in radio advertising (or vice-versa)
+
+```{r}
+credit <- read_rds('data/credit.rds')
+```
+
