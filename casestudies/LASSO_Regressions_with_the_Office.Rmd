@@ -1,0 +1,348 @@
+---
+title: "LASSO Regression with The Office"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    fig.width = 9,
+    fig.height = 6,
+    cache = TRUE
+)
+library(tidyverse)
+library(tidymodels)
+library(vip)
+```
+
+Our modeling goal here is to predict the IMDB ratings for episodes of The Office based on the other characteristics of the episodes in the [#TidyTuesday dataset](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-03-17/readme.md). There are two datasets, one with the ratings and one with information like director, writer, and which character spoke which line.
+
+### Load Data
+
+
+The episode numbers and titles are not consistent between them, so we can use regular expressions to do a better job of matching the datasets up for joining.
+
+```{r office_data}
+ratings_raw <- readr::read_csv(
+    '../data/office_ratings.csv',
+    col_types = cols(
+        season = col_integer(),
+        episode = col_integer(),
+        title = col_character(),
+        imdb_rating = col_double(),
+        total_votes = col_integer(),
+        air_date = col_date(format='%Y-%m-%d')
+    )
+)
+
+```
+
+### Clean the Data
+
+```{r normalize_title_routine}
+normalize_title <- function(titles) {
+    titles %>%
+        str_to_lower() %>%
+        str_remove_all("[:punct:]|[:digit:]|parts |part |the |and") %>% 
+        str_trim()
+}
+```
+
+
+```{r office_ratings}
+
+office_ratings <- ratings_raw %>% 
+    transmute(
+        episode_name = normalize_title(title),
+        imdb_rating
+    )
+office_ratings
+
+```
+
+```{r office_info}
+office_info <- schrute::theoffice %>% 
+    mutate(
+        season = as.integer(season),
+        episode = as.integer(episode),
+        episode_name = normalize_title(episode_name)
+    ) %>% 
+    select(season, episode, episode_name, director, writer, character)
+office_info
+```
+
+
+
+
+### Extract Features
+
+How many times to the characters speak per episode
+
+
+```{r office_characters}
+
+characters <- office_info %>% 
+    # character counts per episode
+    count(episode_name, character) %>% 
+    # add the overall character counts
+    add_count(character, wt = n, name = 'character_count') %>% 
+    # keep just main characters
+    filter(character_count > 800) %>% 
+    # we no longer need the overall character count
+    select(-character_count) %>% 
+    # each character becomes a feature
+    pivot_wider(
+        names_from = character,
+        values_from = n,
+        values_fill = list(n = 0)
+    )
+characters
+
+```
+
+Now get the directors and writers involved in each episode
+
+
+```{r office_creators}
+creators <- office_info %>% 
+    # get the writer and director for each individual episode
+    distinct(episode_name, director, writer) %>% 
+    # create factor of writers and director
+    pivot_longer(director:writer, names_to = 'role', values_to = 'person') %>% 
+    # create separate rows for ; delimited lists
+    separate_rows(person, sep=';') %>% 
+    # count the number of rows for each person and add it as a column
+    add_count(person) %>% 
+    # remove the less important ones
+    filter(n > 10) %>% 
+    # lose the role - just want unique combinations of episodes and individuals
+    distinct(episode_name, person) %>% 
+    # create a column that will be used as an indicator
+    # of whether or not an individual was involved in a given episode
+    mutate(person_value = 1) %>% 
+    # create columns for each person
+    # i indicates participation, 0 indicates not
+    pivot_wider(
+        names_from = person,
+        values_from = person_value,
+        values_fill = list(person_value=0)
+    )
+creators
+
+```
+
+Next we need the season and episode number for each episode
+
+```{r office_combine_episode_ratings_characters_creators}
+
+office <- office_info %>% 
+    distinct(season, episode, episode_name) %>% 
+    # add characters - join on episode_name
+    inner_join(characters, by='episode_name') %>% 
+    # same for creators
+    inner_join(creators, by='episode_name') %>% 
+    # finlly bring in the imdb ratings
+    inner_join(office_ratings, by='episode_name') %>% 
+    # and normalize the feature names
+    janitor::clean_names()
+office
+```
+
+### EDA
+
+Lets look at the distributions of ratings for each episode
+
+```{r plot_ratings_by_episode}
+office %>% 
+    mutate(episode = as.factor(episode)) %>% 
+    ggplot(aes(episode, imdb_rating, fill = episode)) +
+    geom_boxplot(show.legend = FALSE) +
+    scale_y_continuous(limits=c(6, 10), breaks = seq(6, 10, 0.5))
+```
+
+```{r ratings_by_season}
+office %>% 
+    mutate(season = as.factor(season)) %>% 
+    ggplot(aes(season, imdb_rating, fill = season)) +
+    geom_boxplot(show.legend = F)
+```
+
+
+Ratings are higher for episodes later in the season.
+
+What else is associated with higher ratings? Let’s use lasso regression to find out!
+
+
+```{r train_test_split}
+# write_rds(office, 'data/office.rds')
+# office <- read_rds('data/office.rds')
+office_split <- initial_split(office, strata = season)
+office_train <- training(office_split)
+office_test <- testing(office_split)
+prop.table(with(office, xtabs(~season)))
+prop.table(with(office_train, xtabs(~season)))
+prop.table(with(office_test, xtabs(~season)))
+options(digits=5)
+```
+
+### Train the model
+
+
+```{r initial_recipe}
+office_rec <- recipe(
+    # predict rating as a function of all our other features
+    imdb_rating ~ .,
+    # using this training data
+    data = office_train
+) %>% 
+    # though not the episode name - thats just an ID column
+    update_role(episode_name, new_role = 'ID') %>% 
+    # remove any numeric columns that have zero variance. exclude outcome variables
+    step_zv(all_numeric(), -all_outcomes()) %>%
+    # scale and center our numeric predictors
+    step_normalize(all_numeric(), -all_outcomes())
+
+# now prepare the training data
+office_prep <- office_rec %>% 
+    # estimate the required preprocessing parameters
+    # that can later be applied to other data sets
+    prep(strings_as_factors = FALSE)
+office_prep
+```
+
+
+### Specify and fit the models
+
+
+```{r specify_and_fit_initial_lasso_model}
+lasso_spec <- linear_reg(
+    # set shrinkage penalty to 0.1 for now
+    penalty = 0.1,
+    # 1 is lasso
+    mixture = 1
+) %>% 
+    set_engine('glmnet')
+# workflow (or modelling pipeline) is pretty simple
+wf <- workflow() %>% 
+    add_recipe(office_rec)
+# we can fit a workflow much like a model
+lasso_fit <- wf %>% 
+    add_model(lasso_spec) %>% 
+    # and fit the model
+    fit(data = office_train)
+# pull out the results
+lasso_fit %>% 
+    pull_workflow_fit() %>% 
+    tidy()
+
+```
+
+
+
+### Tune the lasso parameters
+
+
+```{r setup_parameter_grid}
+set.seed(1234)
+# create 10 bootstrap samples of our training data
+office_boot <- bootstraps(office_train, strata = season)
+
+tune_spec <- linear_reg(
+    # now the shrinkage penalty has to be tuned
+    penalty = tune(),
+    mixture = 1
+) %>%
+    set_engine("glmnet")
+
+lambda_grid <- grid_regular(penalty(), levels = 50)
+# create 50 candidate values that represent this particular parameter space
+lambda_grid
+
+```
+
+
+```{r tune_lasso_parameters}
+doParallel::registerDoParallel()
+
+set.seed(2020)
+lasso_grid <- tune_grid(
+    wf %>% add_model(tune_spec),
+    resamples = office_boot,
+    grid = lambda_grid
+)
+```
+
+
+```{r view_tuned_parameters}
+lasso_grid %>% 
+    collect_metrics()
+```
+
+
+```{r visualize_tuned_parameters}
+lasso_grid %>%
+    collect_metrics() %>%
+    ggplot(aes(penalty, mean, color = .metric)) +
+    geom_errorbar(
+        aes(ymin = mean - std_err, ymax = mean + std_err),
+        alpha = 0.5
+    ) +
+    geom_line(size = 1.5) +
+    # a plot for each metric
+    facet_wrap( ~ .metric, scales = "free", nrow = 2) +
+    # our parameters cover quite a range, so use log10 scale
+    scale_x_log10() +
+    theme(legend.position = "none")
+```
+
+
+
+Select the best model
+
+
+```{r select_best_model}
+lowest_rmse <- lasso_grid %>% 
+    select_best('rmse', maximize = FALSE)
+lowest_rmse
+
+final_lasso <- finalize_workflow(
+    # add are model spec with the tuning parameter
+    wf %>% add_model(tune_spec),
+    # and update it with the actual value found
+    lowest_rmse
+)
+final_lasso
+```
+
+
+We can then fit this finalized workflow on our training data. While we’re at it, let’s see what the most important variables are using the vip package.
+
+
+```{r variable_importance, fig.width = 9, fig.height = 7}
+
+final_lasso %>%
+    # fit to the traiing data
+    fit(office_train) %>%
+    # get the fitted model
+    pull_workflow_fit() %>%
+    # compute variable importance scores
+    vi(lambda = lowest_rmse$penalty) %>%
+    mutate(
+        # just keep the magnitude of the importance score
+        Importance = abs(Importance),
+        # order variable by their importance
+        Variable = fct_reorder(Variable, Importance)
+    ) %>%
+    ggplot(aes(x = Importance, y = Variable, fill = Sign)) +
+    geom_col() +
+    scale_x_continuous(expand = c(0, 0)) +
+    labs(y = NULL)
+```
+
+
+```{r test_model}
+last_fit(final_lasso, office_split) %>%
+    collect_metrics()
+```
+
+
