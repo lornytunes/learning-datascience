@@ -1,0 +1,394 @@
+---
+title: "Advanced Data Preparation"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE)
+options(digits = 5)
+suppressPackageStartupMessages(library(tidyverse))
+```
+
+
+## KDD and KDD Cup 2009
+
+### Loading the data
+
+```{r load_churn_data}
+churn_data <- read_tsv(
+    'data/kdd_churn_data.tsv',
+    na = c('NA', '')
+)
+churn_data <- churn_data %>% 
+    modify_if(is.character, factor)
+```
+
+```{r churn_data_labels}
+# add the outcomes
+churn_data$churn <- read_table(
+    'data/kdd_churn_labels.txt',
+    col_names = FALSE,
+    col_types = cols(
+        X1 = col_integer()
+    )
+)$X1
+```
+
+
+```{r churn_data_response_variable}
+prop.table(xtabs(~churn, data = churn_data, addNA = TRUE))
+```
+
+
+### Split data
+
+```{r churn_train_test_split}
+set.seed(729375)
+rgroup <- base::sample(
+    c('train', 'calibrate', 'test'),
+    nrow(churn_data),
+    prob = c(0.8, 0.1, 0.1),
+    replace = TRUE
+)
+prop.table(table(rgroup))
+
+churn_train <- churn_data[rgroup == 'train',]
+churn_calibrate <- churn_data[rgroup == 'calibrate',]
+churn_test <- churn_data[rgroup == 'test',]
+churn_train_all <- churn_data[rgroup %in% c('train', 'calibrate'),]
+rm(list = c('rgroup', 'churn_data'))
+
+prop.table(xtabs(~churn, data=churn_train))
+prop.table(xtabs(~churn, data=churn_test))
+
+```
+
+### Bull in the china-shop approach
+
+```{r all_vars_model}
+# build a model formula specification
+# churn == 1 to be predicted as a function of our explanatory variables
+formula_1 <- wrapr::mk_formula(
+    'churn',
+    setdiff(colnames(churn_train_all), 'churn'),
+    outcome_target = 1
+)
+
+model_1 <- glm(formula_1, data = churn_train_all, family = binomial)
+rm(formula_1, model_1)
+
+```
+
+### Trying just one variable
+
+```{r single_var_model}
+model_2 <- glm((churn == 1) ~ Var1, data = churn_train_all, family = binomial)
+summary(model_2)
+```
+
+We saw how to read the model summary in detail in section 7.2. What jumps out here is the line _44407 observations deleted due to missingness._ This means the modeling procedures threw out 44407 of our 45028 training rows, building a model on the remaining 621 rows of data. So in addition to columns that do not vary, we have columns that have damaging amounts of missing values.
+
+
+```{r number_of_factor_levels}
+churn_level_counts <- churn_train_all %>% 
+    select_if(is.factor) %>% 
+    map_df(~length(levels(.))) %>% 
+    pivot_longer(everything(), names_to = 'Factor', values_to='Number_of_levels') %>% 
+    arrange(desc(Number_of_levels))
+churn_level_counts
+
+```
+
+Factors are R’s representation for strings taken from a known set. And this is where an additional problem lies. Notice the listing says the factor has 15415 possible levels. A factor or string variable with this many distinct levels is going to be a big problem in terms of overfitting and also difficult for the `glm()` code to work with.
+
+```{r number_of_distinct_factor_values}
+churn_value_counts <- churn_train_all %>% 
+    select_if(is.factor) %>% 
+    map_df(~length(unique(.))) %>% 
+    pivot_longer(everything(), names_to = 'Factor', values_to = 'Number_of_unique_values') %>% 
+    arrange(desc(Number_of_unique_values))
+churn_value_counts
+
+```
+
+This tells us our training data sample did not see all known values for this variable. Our held-out test set contains, in addition to values seen during training, new values not in the training set. This is quite common for string-valued or categorical variables with a large number of levels, and causes most R modeling code to error-out when trying to make predictions on new data.
+
+```{r}
+churn_level_counts %>% 
+    inner_join(churn_value_counts, by = 'Factor') %>% 
+    mutate(Proportion_seen = Number_of_unique_values / Number_of_levels)
+```
+
+### Basic data preparation for classification
+
+```{r setup_cluster}
+(parallel_cluster <- parallel::makeCluster(parallel::detectCores()))
+churn_vars <- setdiff(colnames(churn_train_all), 'churn')
+```
+
+
+```{r create_treatment_plan}
+
+
+# use designTreatmentsC to learn the treatment plan from the training data
+treatment_plan <- vtreat::designTreatmentsC(
+    churn_train, 
+    varlist = churn_vars, 
+    outcomename = "churn", 
+    outcometarget = 1, 
+    verbose = FALSE,
+    parallelCluster = parallel_cluster
+)
+
+write_rds(treatment_plan, 'staging/treatment_plan.rds')
+
+```
+
+```{r load_treatment_plan}
+treatment_plan <- read_rds('staging/treatment_plan.rds')
+```
+
+
+Now use the treatment plan to prepare cleaned and treated data.
+
+```{r preparing_data_with_vtreat}
+churn_train_treated <- vtreat::prepare(
+    treatment_plan,
+    churn_train,
+    parallelCluster = parallel_cluster
+)
+write_rds(churn_train_treated, 'staging/churn_train_treated.rds')
+```
+
+```{r load_treated_churn_data}
+churn_train_treated <- read_rds('staging/churn_train_treated.rds')
+```
+
+
+### The variable score frame
+
+```{r treatment_score_frame}
+score_frame <- as_tibble(treatment_plan$scoreFrame) %>% 
+    mutate(sig = round(sig, 4)) %>% 
+    select(varName, varMoves, rsq, sig, needsSplit, extraModelDegrees, origName, code)
+
+score_frame %>% 
+    filter(origName %in% c('Var126', 'Var189'))
+
+```
+
+The score frame is a data frame with one row per derived explanatory variable.
+
+Each row shows which original variable the derived variable will be produced from (`origName`), what type of transform will be used to produce the derived variable (`code`), and some quality summaries about the variable.
+
+In this example, Var126 produces two new or derived variables: Var126 (a cleaned-up version of the original Var126 that has no NA/missing values), and `Var116_isBAD` (an indicator variable that indicates which rows of `Var126` originally held missing or bad values).
+
+The `rsq` column records the pseudo R-squared of the given variable, which is an indication of how informative the variable would be if treated as a single-variable model for the outcome.
+
+The `sig` column is an estimate of the significance of this pseudo R-squared. Notice that `var126_isBAD` is more informative than the cleaned up original variable `var126`.
+
+This indicates we should consider including `var126_isBAD` in our model, even if we decide not to include the cleaned-up version of var126 itself!
+
+
+In production systems, missingness is often very informative. Missingness usually indicates the data in question was subject to some condition (temperature out of range, test not run, or something else) and gives a lot of context in an encoded form.
+
+Here is a situation where the information that a variable is missing is more informative than the cleaned-up values of the variable itself.
+
+### Level variables
+
+```{r level_variables}
+
+
+score_frame %>% 
+    filter(origName == 'Var218')
+```
+
+The original variable `Var218` produced four derived variables. In particular, notice that the levels `cJvF` and `UYBR` each gave us new derived columns or variables.
+
+Level variables (lev) `Var218_lev_x_cJvF` and `Var218_lev_x_UYBR` are indicator variables that have the value 1 when the original `Var218` had the values `cJvF` and `UYBR` respectively.
+
+### Impact variables
+
+One-hot encoding creates a new variable for every non-rare level of a categorical variable. The `catB` encoding returns a single new variable, with a numerical value for every possible level of the original categorical variable.
+
+This value represents how informative a given level is: values with large magnitudes correspond to more informative levels.
+
+We call this the impact of the level on the outcome; hence, the term _impact variable._.
+
+To understand impact variables, let’s compare the original `Var218` to `Var218_catB`:
+
+
+```{r}
+df_comparison <- tibble(
+    original218 = churn_train$Var218,
+    impact218 = churn_train_treated$Var218_catB
+)
+df_comparison %>% 
+    head()
+```
+
+For classification problems, the values of impact encoding are related to the predictions of a logistic regression model that predicts churn from Var218.
+
+To see this, we’ll use the simple missingness treatment to explicitly convert the NA values in Var218 to a new level. We will also use the `logit`, or `log-odds` function
+
+
+```{r verify_impact_variable_calculation}
+# simple reatment to turn NA into a safe string
+treatment_plan_2 <- vtreat::design_missingness_treatment(
+    churn_train,
+    varlist = churn_vars
+)
+churn_train_2 <- vtreat::prepare(
+    treatment_plan_2,
+    churn_train
+)
+churn_train_2 %>% 
+    select(Var218) %>% 
+    head()
+# fit a 1 variable logistic regression model
+model <- glm(churn == 1 ~ Var218, data = churn_train_2, family = binomial)
+# make predictions on the data
+pred <- predict(model, newdata = churn_train_2, type = 'response')
+
+# global probability of churn
+(prevalence <- mean(churn_train$churn == 1))
+
+# calculate the log odds of a probability
+logit <- function(p) {
+    log(p/(1-p))
+}
+
+# calculate the catB values by hand
+df_comparison <- df_comparison %>% 
+    mutate(glm218 = logit(pred) - logit(prevalence))
+
+df_comparison %>% 
+    head()
+```
+
+### Prevalence variables
+
+Let’s look at what happened to another variable that was giving us trouble: `Var200`. Recall that this variable has 15415 possible values, of which only 13324 appear in the training data.
+
+
+```{r}
+score_frame %>% 
+    filter(origName == 'Var200')
+```
+
+Note that vtreat only returned one indicator variable, indicating missing values. All the other possible values of `Var200` were rare: they occurred less than 2% of the time. For a variable like `Var200` with a very large number of levels, it isn’t practical to encode all the levels as indicator variables when modeling; it’s more computationally efficient to represent the variable as a single numeric variable, like the `catB` variable.
+
+In our example, the `designTreatmentsC()` method recoded the original 230 explanatory variables into 546 new all-numeric explanatory variables that have no missing values. The idea is that these 546 variables are easier to work with and have a good shot of representing most of the original predictive signal in the data.
+
+
+```{r}
+churn_train_treated %>% 
+    modify_at(vars(contains('_lev_')), as.integer) %>% 
+    modify_if(is.double, ~round(., digits = 4)) %>% 
+    select(starts_with('Var200')) %>% 
+    head()
+```
+
+
+### Using the treatment plan
+
+```{r}
+churn_calibrate_treated <- vtreat::prepare(
+    treatment_plan,
+    churn_calibrate,
+    parallelCluster = parallel_cluster
+)
+```
+
+
+Normally, we could now use `churn_calibrate_treated` to fit a model for churn. In this case, we’ll use it to illustrate the risk of overfit on transformed variables that have `needsSplit == TRUE` in the score frame.
+
+As we mentioned earlier, you can think of the `Var200_catB` variable as a single-variable logistic regression model for churn. This model was fit using churn_train when we called `designTreatmentsC()`; it was then applied to the `churn_calibrate` data when we called `prepare()`.
+
+Let’s look at the AUC of this model on the training and calibration sets:
+
+```{r}
+sigr::calcAUC(
+    churn_train_treated$Var200_catB,
+    churn_train_treated$churn
+)
+
+sigr::calcAUC(
+    churn_calibrate_treated$Var200_catB,
+    churn_calibrate_treated$churn
+)
+```
+
+Notice the AUC estimated in the training data is 0.83, which seems very good. However, this AUC is not confirmed when we look at the calibration data that was not used to design the variable treatment. `Var200_catB` is overfit with respect to `churn_train_treated`.
+
+`Var200_catB` is a useful variable, just not as good as it appears to be on the training data.
+
+The correct procedure is to not reuse churn_train after designing the data treatment plan, but instead use churn_calibrate_treated for model training (although in this case, we should use a larger fraction of the available data than we originally allocated).
+
+With enough data and the right data split (say, 40% data treatment design, 50% model training, and 10% model testing/evaluation), this is an effective strategy.
+
+In some cases, we may not have enough data for a good three-way split.
+
+The built-in vtreat cross-validation procedures allow us to use the same training data both for designing the data treatment plan and to correctly build models.
+
+## Advanced data prepration for classification
+
+```{r using_mkcrossframe_c_experiment}
+cross_frame_experiment <- vtreat::mkCrossFrameCExperiment(
+    churn_train_all,
+    varlist = churn_vars,
+    outcomename = "churn",
+    outcometarget = 1,
+    verbose = FALSE,
+    parallelCluster = parallel_cluster
+)
+# now we use the cross-frame to train the logistic regression model
+churn_train_treated <- cross_frame_experiment$crossFrame
+treatment_plan <- cross_frame_experiment$treatments
+score_frame <- as_tibble(treatment_plan$scoreFrame)
+# prepares the test set so we can call the model on it
+churn_test_treated <- vtreat::prepare(
+    treatment_plan,
+    churn_test,
+    parallelCluster = parallel_cluster
+)
+write_rds(churn_train_treated, 'staging/churn_train_treated.rds')
+write_rds(treatment_plan, 'staging/churn_treatment_plan.rds')
+write_rds(score_frame, 'staging/churn_score_frame.rds')
+write_rds(churn_test_treated, 'staging/churn_test_treated.rds')
+
+```
+
+```{r}
+churn_train_treated <- read_rds('staging/churn_train_treated.rds')
+treatment_plan <- read_rds('staging/churn_treatment_plan.rds')
+score_frame <- read_rds('staging/churn_score_frame.rds')
+churn_test_treated <- read_rds('staging/churn_test_treated.rds')
+```
+
+
+```{r recheck_prediction_quality_of_var200}
+with(churn_train_treated, sigr::calcAUC(Var200_catB, churn))
+with(churn_test_treated, sigr::calcAUC(Var200_catB, churn))
+
+```
+
+Notice that the estimated utility of Var200 on the training data is now much closer to its future performance on the test data.
+
+This means decisions made on the training data have a good chance of being correct when later retested on held-out test data or future application data.
+
+
+### Build a model
+
+#### Variable selection
+
+```{r variable_selection}
+# filter significances at k / nrow. The current heuristic puts k at 1
+k <- 1
+(significance_cutoff <- k / nrow(score_frame))
+score_frame <- score_frame %>% 
+  mutate(selected = sig < significance_cutoff)
+
+
+```
+
