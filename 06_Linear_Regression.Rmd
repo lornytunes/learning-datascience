@@ -14,14 +14,15 @@ options(digits = 4)
 
 ```{r loading_pums}
 pums <- read_rds('data/pums.rds')
+summary(pums$PINCP)
 ```
 
 ### Visualize our response variable
 
 Personal income (`PINCP`)
 
-```{r pums_pincp_plot}
-summary(pums$PINCP)
+```{r pums_income_plot}
+
 pums %>% 
     ggplot(aes(x = PINCP)) +
     geom_histogram(binwidth = 10000, colour = 'white') +
@@ -30,6 +31,10 @@ pums %>%
         labels = scales::label_comma()
     )
 
+
+```
+
+```{r pums_income_log_plot}
 pums %>% 
     ggplot(aes(x = PINCP)) +
     geom_histogram(binwidth = 1/10, colour = 'white') +
@@ -38,6 +43,7 @@ pums %>%
         labels = scales::label_dollar()
     )
 ```
+
 
 We'll do a linear regression on `log10(PINCP)`
 
@@ -68,6 +74,7 @@ pums_train <- pums %>%
     slice(which(gp >= 0.5))
 pums_test <- pums %>% 
     slice(which(gp < 0.5))
+rm(gp)
 ```
 
 
@@ -175,7 +182,7 @@ modelr::rmse(pums_model, pums_test)
 You can think of the RMSE as a measure of the width of the data cloud around the line of perfect prediction. We’d like RMSE to be small, and one way to achieve this is to introduce more useful, explanatory variables.
 
 
-### Coefficients
+## Coefficients
 
 There are eight coefficients that start with `SCHL`
 
@@ -186,12 +193,12 @@ coeffs <- coeffs %>%
 coeffs
 ```
 
-#### Continuous Variables
+### Continuous Variables
 
 `AGEP` is a continuous variable with coefficient 0.0116. You can interpret this as saying that a one-year increase in age adds a 0.0116 bonus to log income; in other words, an increase in age of one year corresponds to an increase of income of $10^{0.0116}$, or a factor of 1.027 - about a 2.7% increase in income (all other variables being equal).
 
 
-#### Factors
+### Factors
 
 ```{r pums_model_coefficients_high_school}
 term_levels <- tibble(term = str_c('SCHL', levels(pums$SCHL)))
@@ -248,9 +255,9 @@ with(pums_test, summary(logPINCP - predLogPINCP))
 
 Most of what you need to know about the quality of the model fit are in the residuals
 
-### Characterizing Coefficient Quality
+## Characterizing Coefficient Quality
 
-#### The Coefficients Table
+### The Coefficients Table
 
 Each model coefficient forms a row of the summary coefficients table. The columns report the estimated coefficient, the uncertainty of the estimate, how large the coefficient is relative to the uncertainty, and how likely such a ratio would be due to mere chance.
 
@@ -282,7 +289,7 @@ bind_rows(
 
 ```
 
-Simple linear regression models for the Advertising data. Coefficients of the simple linear regression model for number of units sold on 
+Simple linear regression models for the Advertising data. Coefficients of the simple linear regression model for number of units sold.
 
 A \$1,000 increase in spending on radio advertising is associated with an average increase in sales by around 203 units, while the same increase in spending on newspaper advertising is associated with an average increase in sales by around 55 units (Note that the sales variable is in thousands of units, and the radio and newspaper variables are in thousands of dollars).
 
@@ -351,7 +358,4 @@ Since $\hat{\beta_1}$ changes with radio the effect of TV on sales is no longer 
 
 We can interpret $\beta_3$ as the increase in the effectiveness of TV advertising for a one unit increase in radio advertising (or vice-versa)
 
-```{r}
-credit <- read_rds('data/credit.rds')
-```
 

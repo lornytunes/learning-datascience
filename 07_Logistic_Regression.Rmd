@@ -1,0 +1,473 @@
+---
+title: "Logistic Regression"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    cache = TRUE,
+    error = TRUE,
+    message = F,
+    warning = F
+)
+options(
+    digits = 3
+)
+suppressMessages(library(tidyverse))
+library(WVPlots)
+library(zeallot)
+source('lib/logistic.R')
+```
+
+## Understanding Logistic Regression
+
+Example Suppose you want to predict whether or not a flight will be delayed, based on facts like the flight’s origin and destination, weather, and air carrier. For every flight i, you want to predict `flight_delayed[i]` based on `origin[i]`, `destination[i]`, `weather[i]`, and `air_carrier[i]`.
+
+Consider the _odds_ that the flight is delayed, or the ratio of the probability that the flight is delayed over the probability that it is not.
+
+$$
+odds_{flight\_delayed} = \frac{P(flight\_delayed == TRUE])}{P(flight\_delayed == FALSE)}
+$$
+
+$$
+log(odds_{flight\_delayed}) = log(\frac{p}{1-p})
+$$
+
+Note that if it’s more likely that a flight will be delayed than on time, the odds ratio will be greater than one; if it’s less likely that a flight will be delayed than on time, the odds ratio will be less than one. So the log-odds is positive if it’s more likely that the flight will be delayed, negative if it’s more likely that the flight will be on time, and zero if the chances of delay are 50-50.
+
+```{r odds_plot}
+odds_df <- tibble(
+    i = 1:10,
+    odds = c(0.01, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0)
+)
+
+odds_df <- odds_df %>% 
+    mutate(
+        log_odds = log(odds),
+        flight_delayed = case_when(
+            log_odds > 0 ~ 'Delayed more likely',
+            log_odds < 0 ~ 'Not delayed more likely',
+            log_odds == 0 ~ 'Equally likely'
+        )
+    )
+
+odds_df %>% 
+    ggplot(aes(x = odds, y = log_odds)) +
+    geom_line(linetype = 'dashed') +
+    geom_point(aes(colour = flight_delayed, shape = flight_delayed), size = 3) +
+    scale_x_continuous(limits = c(0, 20), breaks = seq(0, 20, 2.5)) +
+    geom_vline(xintercept = 1, colour = 'darkgray') +
+    geom_hline(yintercept = 0, colour = 'darkgray') +
+    labs(y = 'logit') +
+    ggtitle('Mapping odds to log odds')
+
+```
+
+
+```{r log_odds_plot}
+
+odds_df <- odds_df %>% 
+    mutate(probs = 1 / (1 + exp(-log_odds)))
+
+odds_df %>% 
+    ggplot(aes(x = log_odds, y = probs)) +
+    geom_line(linetype = 'dashed') +
+    geom_point(aes(colour = flight_delayed, shape = flight_delayed), size = 3) +
+    scale_x_continuous(limits = c(-5, 5), breaks = seq(-5, 5, 2.5)) +
+    scale_y_continuous(limits = c(0, 1)) +
+    geom_vline(xintercept = 0, colour = 'darkgray') +
+    geom_hline(yintercept = c(0, 1), colour = 'darkgray') +
+    labs(x = 'logit', y = 'probability') +
+    ggtitle('Mapping log odds to probabilities')
+```
+
+```{r odds_cleanup}
+rm(odds_df)
+```
+
+
+## Case Study: Predicting Heart Disease
+
+Predict the presence or absence of heart disease.
+
+```{r heart_data_raw, include=FALSE}
+source('lib/heart_disease_meta.R')
+
+data.raw <- readr::read_csv(
+    'data/heart_disease.csv',
+    col_names = heart_disease_colnames,
+    na = c('?')
+)
+```
+
+
+```{r heart_data_etl, include=FALSE}
+heart_df <- data.raw %>% 
+    mutate(
+        sex = factor(sex, labels = c('F', 'M')),
+        cp = factor(as.integer(cp)),
+        fbs = factor(as.integer(fbs)),
+        restecg = factor(as.integer(restecg)),
+        exang = factor(as.integer(exang), labels = c('no', 'yes')),
+        thal = factor(as.integer(thal)),
+        hd = factor(ifelse(hd == 0, 'Healthy', 'Unhealthy')),
+        slope = factor(slope),
+        ca = factor(as.integer(ca))
+    )
+rm(data.raw)
+```
+
+
+Check for missing values
+
+
+```{r heart_data_count_nas}
+# how many nas?
+map_int(heart_df, ~sum(is.na(.x)))
+```
+
+
+```{r heart_data_view_nas}
+heart_df %>% 
+    filter(is.na(ca) | is.na(thal))
+```
+
+
+```{r heart_data_remove_nas}
+heart_df <- heart_df %>% 
+    filter(!(is.na(ca) | is.na(thal)))
+```
+
+```{r heart_data_response_variable}
+# distribution of interest
+prop.table(xtabs(~hd, data=heart_df))
+```
+```{r heart_data_response_variable_tidy}
+fct_count(heart_df$hd, prop=T)
+```
+
+
+Look at the relationships between our predictors and our response - look for different proportions and missing levels.
+
+```{r heart_data_all_factors}
+heart_df %>% 
+    keep(is.factor) %>% 
+    map(function(x) {
+        # column percentages
+        prop.table(xtabs(~hd + x, data=heart_df), margin=2)
+    })
+```
+
+```{r heart_disease_model_response_variable}
+# create response variable
+heart_df <- heart_df %>% 
+    mutate(
+        heart_disease = as.integer(ifelse(hd == 'Unhealthy', 1, 0))
+    )
+```
+
+
+Lets start with a simple model that just uses sex to predict heart disease
+
+```{r heart_disease_model_1}
+lg_1 <- glm(heart_disease ~ sex, data = heart_df, family = 'binomial')
+broom::tidy(lg_1)
+```
+
+```{r heart_disease_model_1_summary}
+broom::glance(lg_1)
+```
+
+The accuracy of the model is determined by the deviance
+
+```{r heart_disease_model_1_null_deviance}
+# the null model. The mean probability of heart disease
+(p_null <- mean(heart_df$heart_disease))
+# once you have a probability you can get the liklihood
+hd_counts <- table(heart_df$heart_disease)
+# [without, with] x log([P(without), P(with)])
+n_liklihood <- as.vector(hd_counts %*% log(c(1 - p_null, p_null)))
+(n_deviance <- -2 * n_liklihood)
+```
+
+```{r heart_disease_model_1_deviance}
+# Load the predicted probabilities
+heart_pred <- heart_df %>% 
+    modelr::add_predictions(lg_1, type='response') %>% 
+    select(hd, heart_disease, pred)
+m_liklihood <- sum(with(heart_pred, log_liklihoods(heart_disease, pred)))
+(m_deviance <- -2 * m_liklihood)
+# and the pseudo r-squared is
+(r_squared = 1 - (m_deviance / n_deviance))
+# the AIC is the log likelihood adjusted for the number of coefficients
+n_params <- length(lg_1$coefficients)
+(m_aic <- 2 * (n_params - m_liklihood))
+```
+
+```{r heart_disease_model_1_plot}
+heart_pred %>% 
+    arrange(pred) %>% 
+    mutate(r = row_number()) %>% 
+    ggplot(aes(x = r, y = heart_disease)) +
+    geom_point(aes(colour = hd), size = 3) +
+    geom_line(aes(y = pred))
+```
+
+```{r heart_disease_model_1_coefficients}
+coef(lg_1)
+```
+
+heart disease = `-1.06 + 1.27 * patient is male`
+
+heart disease = `-1.06 if female`
+
+so
+
+heart disease = `-1.06 + 1.27` if male
+
+These are log odds. The first term is the log of the odds of a female having heart disease and the second term is the increase in the log(odds) that a male has of having heart disease.
+
+So $P(disease_{female})$ is `r inv_logit(-1.06)`
+
+
+```{r heart_disease_model_1_probabilities}
+prop.table(xtabs(~hd + sex, heart_df), margin=2)
+inv_logit(-1.06)
+inv_logit(-1.06 + 1.27)
+```
+
+
+## Case Study: Predicting at Risk Births
+
+
+```{r cdc_data_load, include=FALSE}
+cdc_data <- read_rds('data/cdc.rds')
+
+cdc_train <- cdc_data %>% 
+    filter(ORIGRANDGROUP <= 5) %>% 
+    select(-ORIGRANDGROUP)
+
+cdc_test <- cdc_data %>% 
+    filter(ORIGRANDGROUP > 5) %>% 
+    select(-ORIGRANDGROUP)
+```
+
+
+```{r prevalance_of_at_risk}
+prop.table(xtabs(~at_risk, data = cdc_data))
+prop.table(xtabs(~at_risk, data = cdc_train))
+prop.table(xtabs(~at_risk, data = cdc_test))
+```
+
+
+### Building the logistic regression model
+
+```{r cdc_model_fit}
+complications <- c(
+    'fecal_staining',
+    'short_labor',
+    'breech_birth'
+)
+
+risk_factors <- c(
+    'is_diabetic',
+    'chronic_hypertension',
+    'pregnancy_hypertension',
+    'eclampsia'
+)
+
+other_predictors <- c(
+    'pre_pregnancy_weight',
+    'number_of_prenatal_visits',
+    'is_smoker',
+    'is_premature',
+    'birth_plurality'
+)
+
+fmla <- wrapr::mk_formula(
+    'at_risk',
+    c(other_predictors, complications, risk_factors)
+)
+
+```
+
+```{r cdc_add_predictions}
+cdc_model <- glm(fmla, data = cdc_train, family = binomial(link = 'logit'))
+
+cdc_train <- cdc_train %>% 
+    modelr::add_predictions(cdc_model, type = 'response')
+
+cdc_test <- cdc_test %>% 
+    modelr::add_predictions(cdc_model, type = 'response')
+```
+
+
+Sum all the predicted probabilities over the training set. Notice that it adds to the number of at-risk infants.
+
+```{r cdc_model_summary}
+cdc_train %>% 
+    summarise(
+        at_risk = sum(at_risk),
+        at_risk_predicted = sum(pred)
+    )
+
+cdc_train %>% 
+    filter(is_premature == 'yes') %>% 
+    summarise(
+        at_risk = sum(at_risk),
+        at_risk_predicted = sum(pred)
+    )
+
+```
+
+Because logistic regression preserves marginal probabilities, you know that the model is in some sense consistent with the training data. When the model is applied to future data with distributions similar to the training data, it should then return results consistent with that data: about the correct probability mass of expected at-risk infants, distributed correctly with respect to the infants’ characteristics.
+
+However, if the model is applied to future data with very different distributions (for example, a much higher rate of at-risk infants), the model may not predict as well.
+
+
+### Characterizing prediction quality
+
+```{r cdc_plot_prediction_quality}
+cdc_train %>% 
+    ggplot(aes(x = pred, fill = at_risk)) +
+    geom_density(alpha = 1/2) +
+    ggtitle('Distribution of natality risk scores')
+```
+
+The result is shown in figure 7.14. Ideally, we’d like the distribution of scores to be separated, with the scores of the negative instances `(FALSE)` to be concentrated on the left, and the distribution for the positive instances to be concentrated on the right.
+
+Earlier I showed an example of a classifier (the spam filter) that separates the positives and the negatives quite well. With the natality risk model, both distributions are concentrated on the left, meaning that both positive and negative instances score low.
+
+This isn't surprising, since the positive instances (the ones with the baby at risk) are rare (about `1.8%` of all births in the dataset). The distribution of scores for the negative instances dies off sooner than the distribution for positive instances.
+
+This means that the model did identify subpopulations in the data where the rate of at-risk newborns is higher than the average.
+
+### Model trade-offs
+
+
+```{r cdc_auc_plot}
+
+PRTPlot(
+    cdc_train,
+    'pred',
+    'at_risk',
+    TRUE,
+    plotvars = c('enrichment', 'recall'),
+    thresholdrange = c(0, 0.05),
+    title = 'Enrichment/recall vs threshold for natality model'
+) + geom_vline(xintercept = 0.02, color = 'red', linetype = 2)
+
+```
+
+### Evaluating the chosen model
+
+```{r cdc_confusion_matrix}
+cm <- confusion_matrix(
+    cdc_test$at_risk,
+    cdc_test$pred,
+    0.02,
+    'Yes',
+    'No'
+)
+cm_summary(0.02, cm)
+
+cm_summary(0.02, cm) %>% 
+    mutate(enrichment = precision / mean(cdc_test$at_risk))
+
+
+```
+
+The resulting classifier is low-precision, but identifies a set of potential at-risk cases that contains 55.5% of the true positive cases in the test set, at a rate 2.66 times higher than the overall average. This is consistent with the results on the training set.
+
+### Finding relations and extracting advice from logistic models
+
+
+```{r cdc_coefficients}
+cdc_coeff <- broom::tidy(cdc_model) %>% 
+    mutate(
+        p.value = round(p.value, 4)
+    )
+cdc_coeff
+```
+
+
+```{r cdc_coefficients_as_probabilities}
+cdc_coeff %>% 
+    mutate(
+        odds = exp(estimate)
+    )
+
+100 * odds2p(0.039)
+
+```
+
+Suppose a full-term baby with certain characteristics has a 1% probability of being at risk. Then the risk odds for that baby are $\frac{p}{(1-p)}$, or $\frac{0.01}{0.99} = 0.0101$.
+
+What are the risk odds (and the risk probability) for a baby with the same characteristics, but born prematurely?
+
+
+The coefficient for `is_premature$yes` is 1.545183.
+
+So for a premature baby, the odds of being at risk are `exp(1.545183) = 4.68883` times higher compared to a baby that’s born full-term, with all other input variables unchanged
+
+The risk odds for a premature baby with the same characteristics as our hypothetical full-term baby are `0.0101 * 4.68883 = 0.047`.
+
+```{r cdc_interpreting_coefficients}
+p <- 0.01
+odds <- 4.6883 * p2odds(p)
+100 * odds2p(odds)
+```
+
+
+The coefficient for UPREVIS (number of prenatal medical visits) is about `–0.06`. This means every prenatal visit lowers the odds of an at-risk baby by a factor of `exp(-0.06)`, or about `0.94`.
+
+Suppose the mother of a premature baby had made no prenatal visits; a baby in the same situation whose mother had made three prenatal visits would have odds of being at risk of about `0.047 * 0.94 * 0.94 * 0.94 = 0.039`. This corresponds to a probability of being at risk of {r 100 * odds2p(0.039)}%.
+
+
+### Computing deviance
+
+```{r cdc_deviance}
+(p_null <- mean(cdc_train$at_risk))
+
+(train_null_deviance <- devience(log_liklihoods(cdc_train$at_risk, p_null)))
+
+(train_deviance <- devience(log_liklihoods(cdc_train$at_risk, cdc_train$pred)))
+(test_null_deviance <- sigr::calcDeviance(p_null, cdc_test$at_risk))
+(test_deviance <- sigr::calcDeviance(cdc_test$pred, cdc_test$at_risk))
+
+
+# rsquared
+1 - (train_deviance/train_null_deviance)
+1 - (test_deviance/test_null_deviance)
+
+# for test
+
+```
+
+### Model Significance
+
+```{r cdc_model_significance}
+# number of data points minus 1
+df_null = nrow(cdc_train) - 1
+# the number of data points minus the number of coefficients in the model
+df_model <- nrow(cdc_train) - nrow(cdc_coeff)
+# computes differences in deviance and differences in degrees of freedom
+diff_dev <- train_null_deviance - train_deviance
+diff_df <- df_null - df_model
+# estimate the probablity of seeing the observed difference in deviances under the null model
+pchisq(diff_dev, diff_df, lower.tail = FALSE)
+
+```
+
+The p-value is very small; its extremely unlikely that we could’ve seen this much reduction in deviance by chance.
+
+This means it is plausible (but unfortunately not definitive) that this model has found informative patterns in the data.
+
+It’s worth noting that the model we found is a significant model, just not a powerful one. The good p-value tells us that the model is significant: it predicts at-risk birth in the training data at a quality that is unlikely to be pure chance.
+
+The poor pseudo R-squared means that the model isn’t giving us enough information to effectively distinguish between low-risk and high-risk births.
+
+It’s also possible to have good pseudo R-squared (on the training data) with a bad p-value.
+
+This is an indication of overfit. That’s why it’s a good idea to check both, or better yet, check the pseudo R-squared of the model on both training and test data.
