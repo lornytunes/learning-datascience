@@ -1,0 +1,149 @@
+---
+title: "Quasi Separation"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+options(digits = 4)
+```
+
+
+```{r load_car_data}
+car_data <- read_csv(
+    '../data/car_ratings.csv',
+    col_types = cols(
+        buying = col_factor(),
+        maint = col_factor(),
+        doors = col_factor(),
+        persons = col_factor(),
+        lug_boot = col_factor(),
+        rating = col_factor()
+    )
+) %>% rename(
+    car_price = buying,
+    maint_price = maint
+) %>% mutate(
+    fail = (rating == 'unacc')
+)
+```
+
+```{r car_data_response_variable}
+prop.table(xtabs(~fail, data=car_data))
+```
+
+
+
+```{r car_train_test_split}
+# the carat way
+set.seed(24351)
+car_split <- caret::createDataPartition(
+    car_data$fail,
+    p = 0.7,
+    list = FALSE
+)
+car_train <- car_data %>%
+    slice(car_split)
+
+car_test <- car_data %>%
+    slice(-car_split)
+
+nrow(car_data)
+nrow(car_train)
+nrow(car_test)
+
+prop.table(xtabs(~fail, data=car_train))
+prop.table(xtabs(~fail, data=car_test))
+
+```
+
+```{r save_car_train_and_test}
+write_rds(car_data, '../data/car_rating.rds')
+```
+
+
+### Fit the regression model
+
+```{r fit_car_model}
+(fmla <- wrapr::mk_formula(
+    'fail',
+    setdiff(colnames(car_data), c('rating', 'fail'))
+))
+
+car_model <- glm(fmla, data = car_train, family = binomial)
+```
+
+This warning indicates that the problem is quasi-separable: some set of variables perfectly predicts a subset of the data.
+
+In fact, this problem is simple enough that you can easily determine that a safety rating of low perfectly predicts that a car will fail the review.
+
+```{r failure_counts_for_low_safety_cars}
+car_train %>%
+    filter(safety == 'low') %>%
+    count(fail)
+```
+
+However, even cars with higher safety ratings can get ratings of unacceptable, so the safety variable only predicts a subset of the data.
+
+```{r}
+xtabs(~rating+safety, data = car_train)
+xtabs(~fail+safety, data = car_train)
+```
+
+
+
+```{r}
+summary(car_model)
+```
+
+The variables `safetylow`, `persons4`, and `personsmore` all have unusually high magnitudes and very high standard errors. As mentioned earlier, `safetylow` always corresponds to an unacceptable rating, so `safetylow` is a strong indicator of failing the review. However, larger cars (cars that hold more people) are not always going to pass the review.
+
+It’s possible that the algorithm has observed that larger cars tend to be safer (get a safety rating better than safetylow), and so it is using the persons4 and personsmore variables to cancel out the overly high coefficient from safetylow.
+
+In addition, you can see that the number of Fisher scoring iterations is unusually high; the algorithm did not converge.
+
+This problem is fairly simple, so the model may predict acceptably well on the test set; however, in general, when you see evidence that `glm()` did not converge, you should not trust the model.
+
+```{r}
+coef_df <- broom::tidy(car_model)
+coef_df %>%
+    slice(-1) %>%
+    ggplot(aes(x = term, y = estimate)) +
+    geom_pointrange(aes(ymin = 0, ymax = estimate)) +
+    labs(x = NULL) +
+    ggtitle('Coefficients of logistic regression model') +
+    coord_flip()
+
+```
+
+In the plot, coefficients that point to the right are positively correlated with failing the review, and coefficients that point to the left are negatively correlated with failure.
+
+
+```{r logistic_model_evaluation_routine}
+# print confutions matrix, accuracy and deviance
+confmat <- function(dframe, predvar) {
+    cmat <- table(
+        truth = ifelse(dframe$fail, "unacceptable", "passed"),
+        prediction = ifelse(dframe[[predvar]] > 0.5, "unacceptable", "passed")
+    )
+    accuracy <- sum(diag(cmat)) / sum(cmat)
+    deviance <- sigr::calcDeviance(dframe[[predvar]], dframe$fail)
+
+    list(
+        confusion_matrix = cmat,
+        accuracy = accuracy,
+        deviance = deviance
+    )
+}
+
+```
+
+```{r evaluate_logistic_model}
+car_test <- car_test %>%
+    modelr::add_predictions(car_model, type = 'response', var = 'pred_glm')
+confmat(car_test, 'pred_glm')
+```
+
+
+In this case, the model seems to be good. However, you cannot always trust non-converged models, or models with needlessly large coefficients.

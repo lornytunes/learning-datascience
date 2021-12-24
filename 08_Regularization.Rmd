@@ -1,0 +1,212 @@
+---
+title: "07. Regularization"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(glmnet)
+library(glmnetUtils)
+source('lib/logistic.R')
+options(digits = 4)
+```
+
+## Ridge Regression
+
+```{r load_car_rating_data}
+car_data <- read_rds('data/car_rating.rds')
+```
+
+```{r car_rating_train_and_test}
+# the carat way
+set.seed(24351)
+car_split <- caret::createDataPartition(
+    car_data$fail,
+    p = 0.7,
+    list = FALSE
+)
+car_train <- car_data %>%
+    slice(car_split)
+
+car_test <- car_data %>%
+    slice(-car_split)
+```
+
+```{r fitting_a_ridge_regression_model}
+model_ridge <- cv.glmnet(
+    fmla,
+    car_train,
+    alpha = 0,
+    family = 'binomial'
+)
+broom::glance(model_ridge)
+```
+
+```{r ridge_model_coefficients}
+coefs <- coef(model_ridge)
+ridge_coefs <- tibble(
+    # exclude the first coefficient (the intercept)
+    coef = rownames(coefs)[-1],
+    value = coefs[-1, 1]
+)
+# note that all the levels of the categorical variable persons are present
+# the is no reference level
+ridge_coefs
+rm(coefs)
+```
+
+```{r plot_ridge_coefficients, fig.width = 8, fig.height = 7}
+ridge_coefs %>% 
+    ggplot(aes(x = coef, y = value)) +
+    geom_pointrange(aes(ymin = 0, ymax = value)) +
+    ggtitle('Coefficients of ridge model') +
+    coord_flip()
+```
+
+Notice that `cv.glmnet()` does not use reference levels for categorical variables: for instance, the coefs vector includes the variables `persons2`, `persons4`, and `personsmore`, corresponding to the levels 2, 4, and _more_ for the persons variable.
+
+The logistic regression model used the variables `persons4` and `personsmore`, and used the level value `2` as the reference level. 
+
+Using all the variable levels when regularizing has the advantage that the coefficient magnitudes are regularized toward zero, rather than toward a (possibly arbitrary) reference level.
+
+You can see in figure 7.19 that this model no longer has the unusually large magnitudes. The directions of the coefficients suggest that low safety ratings, small cars, and very high purchase or maintenance price all positively predict rating of unacceptable.
+
+One might suspect that small cars correlate with low safety ratings, so safetylow and persons2 are probably sharing the credit.
+
+```{r ridge_models}
+ridge_models <- broom::tidy(model_ridge)
+
+ridge_models %>% 
+    ggplot(aes(x = lambda, y = estimate)) +
+    geom_line()
+```
+
+
+```{r ridge_model_test_performance}
+car_test <- car_test %>% 
+    modelr::add_predictions(model_ridge, type = 'response', var = 'pred_ridge')
+confmat(car_test, 'pred_glm')
+confmat(car_test, 'pred_ridge')
+
+```
+
+## Lasso Regression
+
+
+```{r fitting_a_lasso_regression}
+model_lasso <- cv.glmnet(
+    fmla,
+    car_train,
+    alpha = 1,
+    family = 'binomial'
+)
+broom::glance(model_lasso)
+```
+
+
+
+```{r lasso_model_coefficients}
+coefs <- coef(model_lasso)
+
+lasso_coefs <- tibble(
+    # exclude the first coefficient (the intercept)
+    coef = rownames(coefs)[-1],
+    value = coefs[-1, 1]
+)
+# note that all the levels of the categorical variable persons are present
+# the is no reference level
+lasso_coefs
+rm(coefs)
+```
+
+
+
+```{r plot_lasso_coefficients, fig.width = 8, fig.height = 7}
+lasso_coefs %>% 
+    ggplot(aes(x = coef, y = value)) +
+    geom_pointrange(aes(ymin = 0, ymax = value)) +
+    ggtitle('Coefficients of lasso model') +
+    coord_flip()
+```
+
+
+```{r lasso_model_test_performance}
+car_test <- car_test %>% 
+    modelr::add_predictions(model_lasso, type = 'response', var = 'pred_lasso')
+confmat(car_test, 'pred_glm')
+confmat(car_test, 'pred_ridge')
+confmat(car_test, 'pred_lasso')
+
+```
+
+
+The lasso model’s accuracy on the test data is similar to the ridge model’s, but the deviance is much lower, indicating better model performance on the test data.
+
+
+## The Elastic Net Solution: Picking Alpha
+
+
+The `cv.glmnet()` function only optimizes over lambda; it assumes that alpha, the variable that specifies the mix of the ridge and lasso penalties, is fixed. The `glmnetUtils` package provides a function called `cva.glmnet()` that will simultaneously cross-validate for both alpha and lambda.
+
+
+```{r cross_validating_for_both_alpha_and_lambda}
+elastic_net <- cva.glmnet(
+    fmla,
+    car_train,
+    family = 'binomial'
+)
+elastic_net
+```
+
+
+```{r finding_the_minimum_error_alpha}
+# get the mean cross-validation error of a cv.glmnet.lambda.lse model
+get_cvm <- function(model) { 
+    index <- match(model$lambda.1se, model$lambda)
+    model$cvm[index]
+}
+# get the alphas that the algorithm tried
+enet_performance <- data.frame(alpha = elastic_net$alpha) 
+# get the model objects produced
+models <- elastic_net$modlist
+# get the errors of each best model
+enet_performance$cvm <- vapply(models, get_cvm, numeric(1)) 
+# find the minimum corss-validation error
+minix <- which.min(enet_performance$cvm)
+# and get the corresponding alpha
+(best_alpha <- elastic_net$alpha[minix])
+
+
+```
+
+```{r model_performances_as_a_function_of_alpha}
+ggplot(enet_performance, aes(x = alpha, y = cvm)) +
+    geom_point() + 
+    geom_line() + 
+    geom_vline(xintercept = best_alpha, color = "red", linetype = 2) + 
+    scale_y_continuous(limits = c(0.2, 0.4)) +
+    ggtitle("CV loss as a function of alpha")
+
+```
+
+
+```{r fitting_elastic_net_model}
+model_enet <- cv.glmnet(
+    fmla, 
+    car_train,
+    alpha = best_alpha,
+    family = "binomial"
+)
+model_enet
+```
+
+```{r evaluating_elastic_net_model}
+car_test <- car_test %>% 
+    mutate(pred_enet = as.numeric(predict(model_enet, newdata = car_test, type = 'response')))
+
+confmat(car_test, 'pred_enet')
+```
+
+It’s also worth noting that in this case, the cross-validated loss falls off quite quickly after `alpha=0`, so in practice, almost any non-zero alpha will give models of similar quality.
+
