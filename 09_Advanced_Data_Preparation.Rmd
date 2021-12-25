@@ -51,17 +51,24 @@ rgroup <- base::sample(
     replace = TRUE
 )
 prop.table(table(rgroup))
+```
 
+```{r churn_train_test}
 churn_train <- churn_data[rgroup == 'train',]
 churn_calibrate <- churn_data[rgroup == 'calibrate',]
 churn_test <- churn_data[rgroup == 'test',]
 churn_train_all <- churn_data[rgroup %in% c('train', 'calibrate'),]
-rm(list = c('rgroup', 'churn_data'))
+
 
 prop.table(xtabs(~churn, data=churn_train))
 prop.table(xtabs(~churn, data=churn_test))
-
 ```
+
+```{r churn_data_cleanup}
+rm(list = c('rgroup', 'churn_data'))
+```
+
+
 
 ### Bull in the china-shop approach
 
