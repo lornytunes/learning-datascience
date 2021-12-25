@@ -1,0 +1,345 @@
+---
+title: "Anova"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE
+)
+options(digits = 3)
+library(tidyverse)
+library(qqplotr)
+
+# calculate teh sum of squares
+ssq <- function(x, y) {
+    if (missing(y)) {
+        sum((x - mean(x))^2)
+    }
+    else {
+        sum((x-y)^2)
+    }
+}
+```
+
+## Yields
+
+
+```{r load_yields}
+yields <- read_tsv(
+    '../data/yields.tsv',
+    col_types = cols(
+        sand = col_integer(),
+        clay = col_integer(),
+        loam = col_integer()
+    )
+) %>% 
+    mutate(r = row_number()) %>% 
+    select(r, sand:loam)
+
+yields
+```
+
+Calculate the mean yield for each soil
+
+```{r mean_yields_base}
+# base r
+yields %>% 
+    select(sand:loam) %>% 
+    sapply(mean, margin = 1)
+```
+
+
+```{r mean_yields_tidy}
+# tidy way
+yields_long <- yields %>% 
+    pivot_longer(sand:loam, names_to='Soil', values_to='Yield')
+
+yields_long %>% 
+    group_by(Soil) %>% 
+    summarise(mean = mean(Yield), .groups = 'drop_last')
+```
+
+```{r mean_yields_map}
+map_dbl(select(yields, sand:loam), mean)
+```
+
+
+Check for consistency in variance
+
+```{r yield_variance}
+yields_long %>% 
+    group_by(Soil) %>% 
+    summarise(var = var(Yield), .groups = 'drop_last')
+```
+
+```{r yield_variance_with_map}
+map_dbl(select(yields, sand:loam), var)
+```
+
+
+They differ by more than a factor of 2. Let perform a `Fligner-Killeen` test for homogeneity of variances
+
+```{r fligner_killeen_test}
+fligner.test(Yield~Soil, data=yields_long)
+```
+
+also
+
+```{r bartlett_test}
+bartlett.test(Yield~Soil,data=yields_long)
+```
+
+
+No evidence of any *significant* difference in variance across the three samples. On with the analysis of variance.
+
+
+```{r visualize_the_differences, fig.width = 6, fig.height = 6}
+yields_long %>% 
+    ggplot(aes(Soil, Yield)) +
+    geom_boxplot() +
+    scale_y_continuous(limits = c(0, 20))
+```
+
+Median yield is lowest on sand and highest on loam, but there is considerable variation from replicate to replicate within each soil type (there is even a low outlier on clay).
+
+It looks as if yield on loam will turn out to be significantly higher than on sand (their boxes do not overlap) but it is not clear whether yield on clay is significantly greater than on sand or significantly lower than on loam. The analysis of variance will answer these questions.
+
+## ANOVA
+
+Calculate the total variation in the response variable
+
+
+```{r calculate_ssy}
+SSY<-ssq(yields_long$Yield)
+```
+
+Then partition that variance into informative components.
+
+First the explained variation
+
+
+```{r calculate_sse}
+treatment_sse <- yields_long %>% 
+    group_by(Soil) %>% 
+    # SSE is calculated from the differences between the yields and the
+    # mean yields for that soil type
+    summarise(SSE = ssq(Yield), .groups = 'drop_last')
+treatment_sse
+SSE <- sum(treatment_sse$SSE)
+
+```
+
+Then variation in yield that is explained by differences between the treatment means
+
+```{r calculate_ssa}
+SSA <- SSY - SSE
+```
+
+
+Finally, draw up the anova table
+
+There are 30 data points in all, so the total degrees of freedom are `30 – 1 = 29`.
+
+We lose `1 d.f.` because in calculating SSY we had to estimate one parameter from the data in advance, namely the overall mean.
+
+Each soil type has n = 10 replications, so each soil type has `10 – 1 = 9 d.f.` for error, because we estimated one parameter from the data for each soil type, namely the treatment means in calculating SSE
+
+Overall, therefore, the error has `3 × 9 = 27 d.f.`
+
+There were three soil types, so there are `3 – 1 = 2 d.f.` for soil type.
+
+
+```{r anova_table}
+anova_df <- tibble(
+	Source = c("Soil type", "Error", "Total"),
+	`Sum of squares`= c(SSA, SSE, SSY),
+	`Degrees of freedom`= c(2, 27, 29)
+)
+anova_df <- anova_df %>% 
+    # convert the sum of squares to variances by dividing the
+    # degrees of freedom
+    mutate(`Mean square` = `Sum of squares` / `Degrees of freedom`)
+anova_df
+```
+
+
+The mean squares are obtained simply by dividing each sum of squares by its respective degrees of freedom (in the same row).
+
+The error variance, $s^2$, is the residual mean square (the mean square for the unexplained variation); this is sometimes called the *pooled error variance* because it is calculated across all the treatments.
+
+The alternative would be to have three separate variances, one for each treatment:
+
+```{r anova_variance}
+soil_variances <- yields_long %>% 
+    group_by(Soil) %>% 
+    summarise(Variance = var(Yield), .groups = 'drop_last')
+soil_variances
+# take the overall mean
+soil_variances %>% 
+    summarise(mean(Variance))
+```
+
+You will see that the pooled error variance $s^2 = 11.7$ is simply the mean of the three separate variances,
+because (in this case) there is equal replication in each soil type `(n = 10)`.
+
+
+The *F ratio* is the treatment variance divided by the error variance
+
+```{r f_ratio}
+f_test <- round(49.6/11.7, 2)
+```
+
+Test the *F ratio*
+
+```{r f_test}
+# the critical value is
+f_crit <- round(qf(
+    .95,
+    # degrees of freedom in the numerator
+    2,
+    # degrees of freedom in the denominator
+    27
+), 2)
+```
+
+And the test statistic of `{r f_test}` is larger than the critical value of `{r f_crit}` so we reject the null hypothesis.
+
+At least one of the soils has a mean yield that is significantly different from the others
+
+Calculate the *p value*
+
+
+```{r}
+p_val <- round(1 - pf(f_test, 2, 27), 4)
+```
+
+The p value is `{r p_val}`, which means that a value of F = `{r f_test}` or bigger would arise by chance alone when the null hypothesis was true about `{r round(p_val * 1000) }` times in 1000
+
+
+Turns out that R can do the whole thing in a single line
+
+
+```{r anova_in_r}
+yield_aov <- aov(Yield~Soil, data = yields_long)
+broom::tidy(yield_aov)
+```
+
+```{r aov_predictions}
+# the predictions are the respective means for each level
+yields_long %>% 
+    group_by(Soil) %>% 
+    mutate(Predicted = mean(Yield)) %>% 
+    pull(Predicted)
+
+predict(yield_aov, yields_long)
+```
+
+
+
+```{r add_predictions}
+
+    
+yields_long <- yields_long %>% 
+    modelr::add_predictions(yield_aov) %>% 
+    modelr::add_residuals(yield_aov)
+
+yields_long <- yields_long %>% 
+    mutate(standardized_residuals = scale(resid))
+
+```
+
+Check for constancy of variance.
+
+There should be no pattern in the residuals against the fitted values (the three treatment means)
+
+
+```{r fitted_vs_residuals}
+yields_long %>% 
+    ggplot(aes(pred, resid)) +
+    geom_point(aes(colour = Soil)) +
+    geom_smooth(method = lm, se = FALSE, colour = 'darkred', size = 0.5) +
+    scale_y_continuous(limits = c(-10, 10)) +
+    labs(x = 'Fitted values', y = 'Residuals') +
+    ggtitle('Residuals vs Fitted')
+
+```
+
+Next we test the assumption of normality of errors: there should be a straight-line relationship between our standardized residuals and theoretical quantiles derived from a normal distribution.
+
+
+```{r normality_of_errors, fig.width = 8, fig.height = 6}
+yields_long %>% 
+    ggplot(aes(sample = standardized_residuals)) +
+    stat_qq_band(alpha = 0.3) +
+    stat_qq_line(colour = 'darkred') +
+    stat_qq_point() +
+    labs(x = 'Theoritical Quantiles', y = 'Standardized residuals') +
+    ggtitle('Normal Q-Q')
+```
+
+## Effect sizes
+
+The effects are shown as departures from the overall mean
+
+```{r effect_sizes}
+model.tables(yield_aov,se=TRUE)
+```
+
+sand has a mean yield that is 2.0 below the overall mean, and loam has a mean that is 2.4 above the overall mean
+
+The standard error of effects is 1.081 on a replication of n = 10 (this is the standard error of a mean).
+
+You should note that this is not the appropriate standard error for comparing two means. If you specify "means" you get:
+
+```{r}
+model.tables(yield_aov, 'means', se = T)
+```
+
+
+Now the three means are printed (rather than the effects) and the standard error of the difference of means is given (this is what you need for doing a t test to compare any two means).
+
+Another way of looking at effect sizes is to use the summary.lm option for viewing the model, rather than summary.aov (as we used above):
+
+```{r summay_lm}
+summary.lm(yield_aov)
+```
+
+$$
+se_{mean} = \sqrt{\frac{s^2}{n}}
+$$
+$$
+se_{diff}  = \sqrt{2\frac{s^2}{n}}
+$$
+```{r standard_errors_of_the_mean}
+soil_variances %>% 
+    summarise(mean(Variance))
+# and the standard error of the mean (where s^2 is taken as the error variance 11.y)
+(error_var <- 11.685)
+# the the variance divided by the the degrees of freedom
+(se_mean <- sqrt(error_var / 10))
+(se_diff <- sqrt(2 * (error_var / 10)))
+```
+
+
+The `summary.lm table` shows that neither loam nor sand produces a significantly higher yield than clay (none of the p-values is less than 0.05, despite the fact that the ANOVA table showed p = 0.025).
+
+But what about the contrast in the yields from loam and sand?
+
+```{r}
+# difference between their means
+mean_diff <- 2.8 - -1.6
+# how many standard errors
+t_value <- mean_diff / se_diff
+# its bigger than 2. The actual pvalue is
+p_val <- 2 * (1 - pt(t_value, df = 18))
+# 10 replicates each less 2 for the two means estimated
+```
+
+
+We multiply by 2 because this is a two-tailed test. We did not know in advance that loam would outyield sand under the particular circumstances of this experiment.
+
+
+That is how analysis of variance works. When the means are significantly different, then the sum of squares computed from the individual treatment means will be significantly smaller than the sum of squares computed from the overall mean.
+
+We judge the significance of the difference between the two sums of squares using analysis of variance.
