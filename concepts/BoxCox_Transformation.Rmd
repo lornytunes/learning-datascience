@@ -1,0 +1,361 @@
+---
+title: "The Box-Cox Transformation"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(tidyverse)
+
+```
+
+## Segmentation Data
+
+### Initial Model
+
+```{r load_segmentation_data}
+data("segmentationData")
+
+segmentationData <-
+    segmentationData %>%
+    select(EqSphereAreaCh1, PerimCh1, Class, Case) %>%
+    setNames(c("PredictorA", "PredictorB", "Class", "Case")) %>%
+    mutate(Class = factor(Class))
+```
+
+```{r view_segmentation_data}
+skimr::skim(segmentationData)
+```
+
+```{r response_variable}
+# variable of interest is WS
+segmentationData %>% 
+    count(Class)
+
+```
+
+
+```{r predictors_cor}
+segmentationData %>% 
+    select(starts_with('Pred')) %>% 
+    cor()
+```
+
+
+
+```{r train_test_split}
+
+train <-
+    segmentationData %>%
+    filter(Case == "Train") %>%
+    select(-Case)
+
+test <-
+    segmentationData %>%
+    filter(Case == "Test") %>%
+    select(-Case)
+```
+
+```{r}
+segmentationData %>% 
+    ggplot(aes(PredictorA, PredictorB, colour=Class)) +
+    geom_point(alpha = 1/3, cex = 1.5) + 
+    theme(legend.position = c(0.1, 0.8)) +
+    ggthemes::scale_colour_tableau()
+```
+
+
+
+```{r visualize_segmentaton_data_a, fig.width=7, fig.height=7}
+segmentationData %>% 
+    ggplot(aes(x = PredictorA, y = PredictorB, color = Class)) + 
+    geom_point(alpha = .3, cex = 1.5) + 
+    theme(legend.position = c(.1, .8)) +
+    ggthemes::scale_colour_tableau() + 
+    ggtitle("(a)")
+```
+
+
+```{r fit_logistic_1}
+# class of interest is 'WS'
+model_1 <- glm(
+    Class == 'WS' ~ PredictorA + PredictorB,
+    train,
+    family = binomial
+)
+broom::tidy(model_1) %>% 
+    modify_if(is.double, ~round(., digits=3))
+
+```
+
+```{r fit_logistic_2}
+test <- test %>% 
+    modelr::add_predictions(model_1, var = 'pred1', type = 'response')
+```
+
+
+```{r class_of_interest}
+test %>% 
+    count(Class)
+```
+
+
+
+```{r plot_predictions_1}
+test %>% 
+    arrange(pred1) %>% 
+    mutate(x = row_number(), y = ifelse(Class == 'WS', 1, 0)) %>% 
+    ggplot(aes(x, y)) +
+    geom_point(aes(colour = Class), alpha = 1/3) +
+    geom_line(aes(y = pred1)) +
+    geom_smooth(
+        method = 'glm',
+        se = FALSE,
+        method.args = list(family = 'binomial'),
+        colour = 'darkgrey',
+        linetype = 'dashed'
+    ) +
+    ggthemes::scale_colour_tableau() +
+    labs(x = NULL, y = NULL)
+```
+
+
+
+```{r model_1_confusion_matrix}
+library(yardstick)
+# default cutoff is not great
+test %>% 
+    mutate(pred1_class = factor(ifelse(pred1 > 0.5, 'WS', 'PS'))) %>% 
+    conf_mat(Class, pred1_class)
+
+```
+
+```{r model_1_roc}
+model1_roc <- roc_curve(test, Class, pred1, event_level='second')
+model1_roc %>% autoplot()
+```
+
+
+```{r}
+roc_auc(test, Class, pred1, event_level='second')
+```
+
+
+### Another Model - Different Encoding
+
+
+```{r add_transformed_variables}
+train <- train %>% 
+    mutate(
+        PredictorA_inv = 1/PredictorA,
+        PredictorB_inv = 1/PredictorB
+    )
+test <- test %>% 
+    mutate(
+        PredictorA_inv = 1/PredictorA,
+        PredictorB_inv = 1/PredictorB
+    )
+```
+
+```{r corr_transformed_variables}
+train %>% 
+    select(starts_with('Pred')) %>% 
+    cor()
+```
+
+
+```{r visualize_transformed, fig.width=7, fig.height=7}
+train %>% 
+    ggplot(aes(PredictorA_inv, PredictorB_inv, colour = Class)) +
+    geom_point(alpha = .3, cex = 1.5) + 
+    theme(legend.position = c(.1, .8)) +
+    ggthemes::scale_colour_tableau() + 
+    ggtitle("(b)")
+```
+
+
+
+```{r fit_logistic_2}
+model_2 <- glm(
+    Class == 'WS' ~ PredictorA_inv + PredictorB_inv,
+    train,
+    family = binomial
+)
+broom::tidy(model_2) %>% 
+    modify_if(is.double, ~round(., digits=3))
+```
+
+```{r}
+bind_rows(
+    broom::glance(model_1),
+    broom::glance(model_2)
+)
+```
+
+
+
+```{r model_2_predictions}
+test <- test %>% 
+    modelr::add_predictions(model_2, var = 'pred2', type = 'response')
+```
+
+
+```{r model_2_auc}
+roc_auc(test, Class, pred2, event_level='second')
+```
+
+
+```{r roc_curves}
+model2_roc <- roc_curve(test, Class, pred2, event_level='second')
+model2_roc %>% autoplot()
+```
+
+
+```{r roc_combined_initial, fig.width=7, fig.height=7}
+model1_roc %>% 
+    ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+    geom_line() +
+    geom_line(data = model2_roc, colour = 'orangered') +
+    geom_abline(
+        lty = 2,
+        alpha = 0.5,
+        color = "gray50",
+        size = 1
+    ) +
+    coord_equal()
+```
+
+
+```{r roc_combined_improved, fig.width=7, fig.height=7}
+model_rocs <- model1_roc %>% 
+    rename(Natural = sensitivity) %>% 
+    add_column(Inverse = model2_roc$sensitivity)
+
+model_rocs %>% 
+    pivot_longer(Natural:Inverse, names_to = 'Units', values_to='sensitivity') %>% 
+    ggplot(aes(x = 1 - specificity, y = sensitivity, colour = Units)) +
+    geom_line() +
+    geom_abline(
+        lty = 2,
+        alpha = 0.5,
+        color = "gray50",
+        size = 1
+    ) +
+    labs(x = 'False Positive Rate', y = 'Recall') +
+    coord_equal()
+```
+
+```{r}
+test %>% 
+    mutate(pred2_class = factor(ifelse(pred2 > 0.625, 'WS', 'PS'))) %>% 
+    yardstick::conf_mat(Class, pred2_class)
+```
+
+
+## Box-Cox
+
+```{r initial_histograms}
+segmentationData %>% 
+    pivot_longer(PredictorA:PredictorB, names_to='Variable') %>% 
+    ggplot(aes(x = value)) +
+    geom_histogram(bins = 50, colour='white', fill='darkred') +
+    facet_wrap(~Variable, ncol = 1, scale = 'free_x')
+```
+
+
+$$
+\tilde{x} = \frac{x^\lambda - 1}{\lambda}
+$$
+If $\lambda=0$ then $\tilde{x}=log(x)$
+
+```{r boxcox_estimates}
+bc_a <- caret::BoxCoxTrans(segmentationData$PredictorA)
+bc_b <- caret::BoxCoxTrans(segmentationData$PredictorB)
+bc_a$lambda
+bc_b$lambda
+
+```
+
+```{r box_cox_calculations}
+box_cox <- function(x, lambda) {
+    (x^lambda - 1) / lambda
+}
+
+train %>% 
+    mutate(
+        PredictorA_trans = predict(bc_a, newdata = train$PredictorA),
+        PredictorA = box_cox(PredictorA, bc_a$lambda)
+    ) %>% 
+    select(starts_with('PredictorA'))
+
+
+```
+
+
+```{r box_cox_histogram, fig.width = 8, fig.height = 7}
+segmentationData %>% 
+    mutate(
+        PredictorA = box_cox(PredictorA, bc_a$lambda),
+        PredictorB = box_cox(PredictorB, bc_b$lambda)
+    ) %>% 
+    pivot_longer(PredictorA:PredictorB, names_to='Variable') %>% 
+    ggplot(aes(x = value)) +
+    geom_histogram(bins = 50, colour='white', fill='darkred') +
+    facet_wrap(~Variable, ncol = 1, scale = 'free_x')
+```
+
+
+```{r model_3}
+train <- train %>% 
+    mutate(
+        PredictorA_trans = box_cox(PredictorA, bc_a$lambda),
+        PredictorB_trans = box_cox(PredictorB, bc_b$lambda)
+    )
+test <- test %>% 
+    mutate(
+        PredictorA_trans = box_cox(PredictorA, bc_a$lambda),
+        PredictorB_trans = box_cox(PredictorB, bc_b$lambda)
+    )
+
+model_3 <- glm(
+    Class == 'WS' ~ PredictorA_trans + PredictorB_trans,
+    train,
+    family = binomial
+)
+bind_rows(
+    broom::glance(model_1),
+    broom::glance(model_2),
+    broom::glance(model_3)
+)
+```
+
+```{r model_3_auc}
+test <- test %>% 
+    modelr::add_predictions(model_3, var = 'pred3', type = 'response')
+model3_roc <- test %>% yardstick::roc_curve(Class, pred3, event_level='second')
+
+model_rocs <- model_rocs %>% 
+    add_column(Transformed = model3_roc$sensitivity)
+model_rocs %>% 
+    pivot_longer(Natural:Transformed, names_to = 'Units', values_to='sensitivity') %>% 
+    ggplot(aes(x = 1 - specificity, y = sensitivity, colour = Units)) +
+    geom_line() +
+    geom_abline(
+        lty = 2,
+        alpha = 0.5,
+        color = "gray50",
+        size = 1
+    ) +
+    labs(x = 'False Positive Rate', y = 'Recall') +
+    coord_equal()
+```
+
+
+```{r all_auc}
+auc <- function(p) {
+    yardstick::roc_auc(test, Class, {{ p }}, event_level='second')$.estimate
+}
+map_df(c(Natural='pred1', Inverse='pred2', Transformed='pred3'), auc)
+```
+
