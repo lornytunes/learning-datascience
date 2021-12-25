@@ -1,0 +1,118 @@
+---
+title: "Specialized Statistical Tests"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+## Normal
+
+```{r plot_normal_theoretical}
+df_norm <- tibble(
+    x = seq(from = -5, to = 5, length.out = 100)
+) %>% mutate(y = dnorm(x))
+
+df_norm %>% 
+    ggplot(aes(x = x, y = y)) +
+    geom_line()
+```
+
+```{r plot_normal_empirical}
+
+ggplot(tibble(u = rnorm(1000)), aes(x = u)) +
+    geom_density() +
+    geom_line(data = df_norm, aes(x = x, y = y), linetype = 'dashed')
+
+```
+
+
+```{r normal_cdf}
+# 50% of the observations will be less than the mean
+pnorm(0)
+# 2.3% of all observations are more than 2 standard deviations below the mean
+pnorm(-2)
+# and 95.4% are 2 sd from te mean
+pnorm(2) - pnorm(-2)
+```
+
+The function `qnorm(p, mean = m, sd = s)` is the quantile function for the normal distribution with mean m and standard deviation s. It’s the inverse of `pnorm()`, in that `qnorm(p, mean = m, sd = s)` returns the value x such that `pnorm(x, mean = m, sd = s) == p`.
+
+
+```{r using_qnorm}
+# the median is also the mean
+qnorm(0.5)
+# 75th percentile
+(line <- qnorm(0.75))
+pnorm(line)
+xstr <- sprintf("qnorm(0.75) = %1.3f", line)
+# normal distribution to the left of the 75th percentile
+df75 <- df_norm %>% 
+    filter(x < line)
+
+ggplot(df_norm, aes(x=x, y=y)) +
+    geom_line() +
+    geom_area(data = df75, aes(x = x, y = y), fill = 'grey') +
+    geom_vline(aes(xintercept = line), linetype = 'dashed') +
+    geom_text(x = line, y = 0, label = xstr, vjust = 1)
+
+```
+
+## Lognormal
+
+```{r log_normal_properties}
+# 1001 samples from lognormal with meanlog 0 and sdlog 1
+df_u <- tibble(u = rlnorm(1001))
+# mean higher than median
+df_u %>% 
+    summarise(
+        mean = mean(u),
+        median = median(u),
+        # mean of log(u) is approx 0
+        mean_l = mean(log(u)),
+        # sd of log(u) is approx 1
+        sd_l = sd(log(u))
+    )
+# mean is higher than the median
+df_lnorm <- tibble(
+    x = seq(from  = 0, to = 25, length.out = 500)
+) %>% mutate(y = dlnorm(x))
+
+df_norm <- tibble(
+    x = seq(from = -5, to = 5, length.out = 500)
+) %>% mutate(y = dnorm(x))
+
+ggplot(df_u, aes(x = u)) +
+    geom_density() +
+    geom_line(data = df_lnorm, aes(x = x, y = y), linetype = 2)
+
+ggplot(df_u, aes(x = log(u))) +
+    geom_density() +
+    geom_line(data = df_norm, aes(x = x, y = y), linetype = 2)
+
+```
+
+## Correlation
+
+```{r synthetic_uncorrelated_income}
+set.seed(235236)
+income <- tibble(
+    EarnedIncome = 100000 * rlnorm(100),
+    CapitalGains = 100000 * rlnorm(100)
+)
+with(income, cor(EarnedIncome, CapitalGains))
+
+```
+
+```{r test_the_correlation}
+income %>% 
+    summarise(cor = cor(EarnedIncome, CapitalGains, method = 'spearman'))
+ctest <- with(income, cor.test(EarnedIncome, CapitalGains, method = 'spearman'))
+broom::tidy(ctest)
+```
+
+```{r cor_test_sigr}
+sigr::wrapCorTest(ctest)
+```
