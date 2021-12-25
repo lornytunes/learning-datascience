@@ -1,0 +1,174 @@
+---
+title: "Association Rules"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(arules)
+```
+
+```{r reading_the_book_data}
+bookbaskets <- read.transactions(
+    'data/bookdata.tsv.gz',
+    # file format - every row corresponds to a single item (rather than a single transaction)
+    format = 'single',
+    # the input file has a header
+    header = TRUE,
+    sep = '\t',
+    # the transaction ids and item ids
+    cols = c('userid', 'title'),
+    # remove duplicate entries - i.e bought in one edition, rated in another
+    rm.duplicates = TRUE,
+    encoding='latin1'
+)
+```
+
+
+```{r examining_the_data}
+class(bookbaskets)
+# transactions x items
+dim(bookbaskets)
+# items (columns) are individual books
+colnames(bookbaskets)[1:5]
+# rows are labeled by customer
+rownames(bookbaskets)[1:5]
+# distribution of transaction sizes (items in each row)
+basket_sizes <- arules::size(bookbaskets)
+summary(basket_sizes)
+```
+
+
+Most customers (at least half of them, in fact) only expressed interest in one book. But someone has expressed interest in more than 10,000! You probably want to look more closely at the size distribution to see what’s going on.
+
+```{r examining_the_size_distribution}
+quantile(basket_sizes, probs = seq(0, 1, 0.1))
+```
+
+
+```{r plot_size_distribution}
+tibble(count = basket_sizes) %>% 
+    ggplot(aes(x = count)) +
+    geom_density() +
+    scale_x_log10()
+```
+
+
+90% of customers expressed interest in fewer than 15 books; most of the remaining customers expressed interest in up to about 100 books or so;
+
+```{r}
+quantile(basket_sizes, probs = c(0.99, 1))
+```
+
+
+the call `quantile(basketSizes, probs = c(0.99, 1))` will show you that 99% of customers expressed interest in 179 books or fewer. Still, a few people have expressed interest in several hundred, or even several thousand books.
+
+
+Which books are they reading? The function `itemFrequency()` can tell you how often each book shows up in the transaction data (i.e. the column totals).
+
+```{r item_frequency}
+book_count <- itemFrequency(bookbaskets, 'absolute')
+summary(book_count)
+```
+
+
+```{r most_frequent}
+book_count_df <- tibble(
+    book = str_trim(names(book_count)),
+    count = book_count
+) %>% arrange(desc(count))
+
+
+book_count_df %>% 
+    top_n(10, count)
+
+book_count_df %>% 
+    top_n(10, count) %>% 
+    mutate(support = round(count / nrow(bookbaskets), 4))
+```
+
+The last observation in the preceding listing highlights one of the issues with mining high-dimensional data: when you have thousands of variables, or thousands of items, almost every event is rare. Keep this point in mind when deciding on support thresholds for rule mining; your thresholds will often need to be quite low.
+
+
+```{r association_rules, paged.print=FALSE, results='asis'}
+# restrict ourselves to customers who have expressed interest in at least two books
+bookbaskets_use <- bookbaskets[basket_sizes > 1]
+dim(bookbaskets_use)
+# minimum support and minmun confidence of 0.75
+rules <- apriori(
+    bookbaskets_use,
+    parameter = list(
+        support = 0.002,
+        confidence = 0.75
+    )
+)
+summary(rules)
+
+```
+
+
+```{r scoring_the_rules}
+measures <- interestMeasure(
+    rules,
+    measure = c('coverage', 'fishersExactTest'),
+    transactions = bookbaskets_use
+)
+summary(measures)
+0.002 * 40822
+```
+
+```{r most_confident_rules}
+rules %>% 
+    sort(by = 'lift') %>% 
+    head(n = 5) %>% 
+    inspect()
+
+```
+
+
+There are two things to notice. First, the rules concern books that come in series: the numbered series of novels about bounty hunter Stephanie Plum, and the Harry Potter series.
+
+So these rules essentially say that if a reader has read four Stephanie Plum or three Harry Potter books, they’re almost sure to buy another one. The second thing to notice is that rules 1, 4, and 5 are permutations of the same itemset. This is likely to happen when the rules get long.
+
+```{r restricting_items, paged.print = FALSE}
+brules <- apriori(
+    bookbaskets_use,
+    # relax minimum support and confidence
+    parameter = list(
+        support = 0.001,
+        confidence = 0.6
+    ),
+    appearance = list(
+        # only the lovely bones is alloed to appear on the right side of the rules
+        rhs = c('The Lovely Bones: A Novel'),
+        # all books can go into the left side of the rules
+        default = 'lhs'
+    )
+)
+summary(brules)
+```
+
+
+```{r inspecting_rules}
+brules %>% 
+    sort(by = 'confidence') %>% 
+    head(n = 5) %>% 
+    inspect()
+```
+
+Note that four of the five most confident rules include Lucky: A Memoir in the left side, which perhaps isn’t surprising, since Lucky was written by the author of The Lovely Bones. Suppose you want to find out about works by other authors that are interesting to people who showed interest in The Lovely Bones; you can use `subset()` to filter down to only rules that don’t include Lucky.
+
+
+```{r}
+brules_sub <- subset(
+    brules,
+    subset = !(lhs %in% 'Lucky : A Memoir')
+)
+brules_sub %>% 
+    sort(by = 'confidence') %>% 
+    lhs() %>% 
+    head(n = 5) %>% 
+    inspect()
+```
+

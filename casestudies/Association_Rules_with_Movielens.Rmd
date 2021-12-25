@@ -1,0 +1,806 @@
+---
+title: "Association Rules with the Movielens dataset"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    fig.width = 10,
+    fig.height = 8,
+    paged.print=FALSE
+)
+options(digits=5)
+library(tidyverse)
+library(arules)
+library(zeallot)
+```
+
+
+```{r movie_data, paged.print=TRUE}
+movies <- read_csv(
+    '../data/movielens.csv',
+    col_types = cols(
+        movieId = col_integer(),
+        title = col_character(),
+        genres = col_character()
+    )
+)
+movies %>% 
+    head()
+
+```
+
+```{r movies_extract_title_and_year}
+# separate title and year
+title_year <- '(.+) \\(([0-9]{4})\\)'
+
+sample <- movies %>% 
+    sample_n(10) %>% 
+    select(title)
+
+str_match(sample$title, title_year)
+
+# 100x3 matrix
+# movies %>% 
+#     sample_n(5) %>% 
+#     .$title %>% str_match(title_year)
+
+sample %>% 
+    extract(title, c('name', 'year'), title_year, remove=F, convert=T)
+
+movies <- movies %>% extract(
+    title,
+    c('name', 'year'),
+    title_year,
+    remove = F,
+    convert=T
+)
+
+
+movies <- movies %>% 
+    filter(!is.na(name), year>=1900) %>% 
+    mutate(name=str_trim(name)) %>% 
+    select(-title) %>% 
+    rename(title=name)
+
+rm(title_year)
+```
+
+```{r movies_extract_alternative_title_practice}
+# practice first
+movies %>% 
+    sample_n(100) %>% 
+    pull(title)
+
+# match everything inside of brackets thats not acually an end bracket
+
+bracketed_term = '\\(([^)]+)\\)'
+
+samp <-  tibble(
+    movie = c('Days of Grace (Días de gracia)')
+)
+remove_bracketed_term <- function(values) {
+    values %>% str_replace(bracketed_term, '') %>% str_trim()
+}
+
+samp %>% 
+    extract(movie, bracketed_term, into='alt_title_1', remove=F) %>% 
+    mutate(movie=remove_bracketed_term(movie))
+
+
+movies %>% 
+    sample_n(100) %>% 
+    extract(title, bracketed_term, into='alt_title_1', remove=F) %>% 
+    mutate(
+        title = ifelse(
+            !is.na(alt_title_1),
+            remove_bracketed_term(title),
+            title
+        )
+    ) %>% 
+    filter(!is.na(alt_title_1)) %>% 
+    select(title, alt_title_1)
+
+
+
+rm(samp)
+write_rds(movies, '../staging/movies.rds')
+movies <- read_rds('../staging/movies.rds')
+```
+
+```{r movies_extract_alternative_title_practice}
+movies <- movies %>% 
+    extract(title, bracketed_term, into='alt_title_1', remove=F) %>% 
+    mutate(
+        title = ifelse(
+            !is.na(alt_title_1),
+            remove_bracketed_term(title),
+            title
+        )
+    )
+
+movies %>% 
+    sample_n(200) %>% 
+    filter(!is.na(alt_title_1)) %>% 
+    arrange(title) %>% 
+    select(title, alt_title_1)
+
+# go again
+movies <- movies %>% 
+    extract(title, bracketed_term, into='alt_title_2', remove=F) %>% 
+    mutate(
+        title = ifelse(!is.na(alt_title_2), remove_bracketed_term(title), title)
+    )
+
+movies %>% 
+    filter(str_detect(title, bracketed_term)) %>% 
+    select(title, alt_title_1, alt_title_2)
+
+# go again
+movies <- movies %>% 
+    extract(title, bracketed_term, into='alt_title_3', remove=F) %>% 
+    mutate(
+        title = ifelse(!is.na(alt_title_3), remove_bracketed_term(title), title)
+    )
+
+movies %>% 
+    filter(str_detect(title, bracketed_term)) %>% 
+    select(title, starts_with('alt'))
+
+# one last time
+movies <- movies %>% 
+    extract(title, bracketed_term, into='alt_title_4', remove=F) %>% 
+    mutate(
+        title = ifelse(!is.na(alt_title_4), remove_bracketed_term(title), title)
+    )
+
+movies %>% 
+    filter(str_detect(title, bracketed_term)) %>% 
+    select(title, starts_with('alt'))
+
+movies <- movies %>% 
+    mutate(title=str_trim(title))
+```
+
+
+```{r movies_view_subtitles}
+movies %>% 
+    filter(str_detect(title, ': ?')) %>% 
+    select(title)
+```
+
+Splitting these will help us find movies that are sequels of one another
+
+
+```{r subtitle_exploration}
+title_subtitle_re <- '([^:]+): ?(.+)'
+subtitle_re <- ': ?(.+)'
+samp <- tibble(
+    title = c('Ace Ventura: When Nature Calls')
+)
+samp %>% 
+    extract(title, title_subtitle_re, into=c('title', 'subtitle'))
+
+samp %>% 
+    extract(title, subtitle_re, into=c('subtitle'), remove=F)
+
+movies %>% 
+    filter(str_detect(title, ': ?')) %>% 
+    extract(title, subtitle_re, into='subtitle', remove=F) %>% 
+    mutate(
+        title = ifelse(
+            !is.na(subtitle),
+            str_replace(title, subtitle_re, ''),
+            title
+        )
+    ) %>% 
+    modify_at(vars(title, subtitle), str_trim)
+
+
+```
+
+
+```{r subtitle_extraction}
+movies <- movies %>% 
+    extract(title, subtitle_re, into='subtitle', remove=F) %>% 
+    mutate(
+        title = ifelse(
+            !is.na(subtitle),
+            str_replace(title, subtitle_re, ''),
+            title
+        )
+    ) %>% 
+    modify_at(vars(title, subtitle), str_trim)
+
+write_rds(movies, '../staging/movies.rds')
+```
+
+
+```{r movie_prefixes_exploration}
+prefix_re <- ', ([^ ]{1,5})$'
+end_brackets <- '[:)]+$'
+
+movies %>% 
+    filter(str_detect(title, end_brackets)) %>% 
+    select(title, subtitle)
+
+# remove stay brackets at the end
+movies %>% 
+    filter(str_detect(title, end_brackets)) %>% 
+    mutate(title = str_replace(title, end_brackets, ''))
+
+
+movies <- movies %>% 
+    mutate(title = str_trim(str_replace(title, end_brackets, '')))
+
+movies %>% 
+    filter(str_detect(title, prefix_re)) %>% 
+    select(title)
+
+prefixes <- str_match(movies$title, prefix_re)[,2]
+unique(prefixes)
+movies %>% 
+    filter(str_detect(title, ', (De|Da)$')) %>% 
+    select(title)
+movies %>% 
+    filter(str_detect(title, prefix_re)) %>% 
+    filter(!str_detect(title, ', (A|The)')) %>% 
+    select(title)
+
+prefixes <- ", (The|the|A|An|But|Da|De|Die|Das|Der|Los|La|Le|Les|Las|En|Une|L|L'|I|Il|El|O)$"
+movies %>% 
+    filter(str_detect(title, prefixes)) %>% 
+    extract(title, prefixes, into='prefix', remove=F) %>% 
+    filter(!prefix %in% c('The', 'A')) %>% 
+    arrange(prefix) %>% 
+    select(title, prefix)
+
+```
+
+```{r movie_prefixes_extraction}
+movies <- movies %>% 
+    extract(title, prefixes, into='prefix', remove=F) %>% 
+    mutate(
+        title = ifelse(
+            !is.na(prefix),
+            str_trim(str_replace(title, prefixes, '')),
+            title
+        )
+    )
+write_rds(movies, '../staging/movies.rds')
+movies = read_rds('../staging/movies.rds')
+```
+
+Check for odd titles
+
+```{r check_title_lengths}
+movies %>% 
+    mutate(title_length = str_length(title)) %>% 
+    filter(title_length > 60) %>% 
+    arrange(desc(title_length)) %>% 
+    select(title, year)
+```
+
+Looks like we have another pattern for subtitles
+
+```{r more_subtitles, paged.print=TRUE}
+subtitle_re <- ' - (.+)$'
+samp <- tibble(
+    title = c('Kino-pravda no. 13 - Yesterday, Today, Tomorrow. A Film Poem Dedicated to the October Revolution')
+)
+samp %>% 
+    extract(title, subtitle_re, into='subtitle', remove=F)
+
+movies %>% 
+    filter(str_detect(title, subtitle_re)) %>% 
+    extract(title, subtitle_re, into='subtitle2', remove=F) %>% 
+    select(title, subtitle2)
+
+movies <- movies %>% 
+    extract(title, subtitle_re, into='subtitle2', remove=F) %>% 
+    mutate(
+        title = ifelse(
+            !is.na(subtitle2),
+            str_trim(str_replace(title, subtitle_re, '')),
+            title
+        )
+    ) %>% 
+    mutate(subtitle = ifelse(
+        !is.na(subtitle2),
+        subtitle2,
+        subtitle
+    )) %>%
+    select(-subtitle2)
+    
+```
+
+```{r movie_titles_with_or}
+subtitle_re <- ', or (.{10,})$'
+movies %>% 
+    filter(str_detect(title, subtitle_re)) %>% 
+    select(title)
+```
+
+
+```{r extract_or_subtitles}
+movies %>% 
+    filter(str_detect(title, subtitle_re)) %>% 
+    extract(title, subtitle_re, into='subtitle2', remove=F) %>% 
+    select(title, subtitle2)
+
+movies <- movies %>% 
+    extract(title, subtitle_re, into='subtitle2', remove=F) %>% 
+    mutate(
+        title = ifelse(
+            !is.na(subtitle2),
+            str_trim(str_replace(title, subtitle_re, '')),
+            title
+        )
+    ) %>% 
+    mutate(subtitle = ifelse(!is.na(subtitle2), subtitle2, subtitle)) %>%
+    select(-subtitle2)
+```
+
+
+```{r check_title_lengths_again}
+movies %>% 
+    mutate(title_length = str_length(title)) %>% 
+    filter(title_length > 60) %>% 
+    arrange(desc(title_length)) %>% 
+    select(title)
+```
+
+
+
+```{r reorder_columns_and_save}
+movies <- movies %>% 
+    select(movieId, prefix, title, subtitle, year, genres, alt_title_1, alt_title_2, alt_title_3, alt_title_4)
+
+movies %>% write_rds('../staging/movies.rds')
+# clean up
+rm(samp, bracketed_term, end_brackets, prefix_re, prefixes, subtitle_re, title_subtitle_re)
+```
+
+ETL Done
+
+```{r load_movies_post_title_etl}
+movies <- read_rds('../staging/movies.rds')
+# we don't need all the alternative titles in this analysis
+movies <- movies %>% 
+    select(!starts_with('alt'))
+```
+
+
+
+```{r movie_genres}
+
+all_genres <- unique(unlist(str_split(movies$genres, '\\|')))
+all_genres
+#  movies without genres
+movies %>% 
+    filter(str_detect(genres, '(no genres listed)')) %>% 
+    nrow()
+```
+
+Create indicator columns for each genre.
+
+```{r}
+movie_genres <- movies %>% 
+    # we just need the movie id and the genres column
+    select(movieId, genres) %>% 
+    tidytext::unnest_regex(genre, genres, '\\|') %>%
+    filter(!genre %in% c('imax', '(no genres listed)'))
+
+movie_genres %>% 
+    .$genre %>% 
+    fct_count(sort = TRUE)
+```
+
+Look at the distribution by genre
+
+```{r movies_by_genre, fig.width = 8, fig.height = 7}
+movie_genres %>% 
+    ggplot(aes(x = fct_rev(fct_infreq(genre)))) +
+    geom_bar(fill='gray80', colour='gray50') +
+    labs(x = NULL, y = NULL) +
+    coord_flip() +
+    theme(legend.position = 'none')
+```
+
+
+Another way of doing it
+
+
+```{r}
+samp <- movies %>% 
+    sample_n(100)
+all_genres = all_genres[! all_genres %in% c("IMAX","(no genres listed)")]
+
+for(genre in all_genres) {
+    samp[str_c("genre_", genre)] = ifelse((str_detect(samp$genres,genre) | str_detect(samp$genres, "no genres")), 1, 0)
+}
+samp$genres <- NULL
+rm(samp, all_genres)
+
+```
+
+Convert genres into features and add to our movies
+
+```{r extract_genre_features}
+movies_wide <- movie_genres %>% 
+    mutate(val = 1) %>% 
+    pivot_wider(names_from = genre, values_from = val, values_fill = 0) %>%
+    modify_if(is.double, as.integer)
+
+movies <- movies %>% 
+    inner_join(movies_wide) %>% 
+    select(-genres)
+
+write_rds(movie_genres, '../staging/movie_genres.rds')
+write_rds(movies, '../staging/movies_complete.rds')
+rm(movie_genres, movies_wide, all_genres)
+```
+
+This completes the feature engineering of movies
+
+```{r load_completed}
+movies <- read_rds('../staging/movies_complete.rds')
+```
+
+
+
+Explore the number of movies for each year in the dataset
+
+```{r movies_by_year, fig.width = 12, fig.height = 7}
+movies %>% 
+    ggplot(aes(year)) +
+    geom_bar(colour = 'gray50', fill = 'gray80') +
+    scale_x_continuous(
+        breaks = seq(1900, 2020, 10)
+    ) +
+    ggtitle('Number of movies by year')
+```
+
+
+
+Load the ratings
+
+
+```{r load_movie_ratings}
+ratings <- read_csv(
+    '../data/movie_ratings.csv.gz',
+    col_types = cols(
+        userId = col_integer(),
+        movieId = col_integer(),
+        rating = col_skip(),
+        timestamp = col_skip()
+    )
+)
+
+```
+
+```{r combine_movies_and_ratings}
+# discard ratings whose movie id has been discarded
+ratings <- ratings %>% 
+    semi_join(movies)
+# how many ratings
+dim(ratings)
+```
+
+
+We construct User-Item matrix with binary values; 0 - a movie isn’t seen by a user, and 1 - it is seen. The package uses a sparse matrix object, `transactions`, to represent the User-Item matrix.
+
+There will be a row for each unique `userId` and indicator columns for each `movieId`
+
+This prevents us from consuming all available RAM as most elements in the matrix will be zero.
+
+```{r split_function}
+samp <- ratings[1:100,]
+# see what split does
+base::split(samp[,'movieId'], samp[,'userId'])
+```
+
+```{r test_user_item_matrix}
+user_item_matrix <- as(split(samp[,"movieId"], samp[,"userId"]), "transactions")
+dim(user_item_matrix)
+```
+
+
+
+```{r user_item_matrix}
+user_item_matrix <- as(split(ratings[,"movieId"], ratings[,"userId"]), "transactions")
+dim(user_item_matrix)
+dim(ratings)
+# the number of unique items in each column
+apply(ratings, 2, function(col) length(unique(col)))
+c(num_users, num_movies) %<-% dim(user_item_matrix)
+
+# dont' need this anymore
+rm(ratings, samp)
+```
+
+```{r user_item_matrix_summary}
+user_item_matrix
+```
+
+
+Next, we mine for a frequent pair of movies that raters watched. We hypothesize that if movie A and B are frequently viewed together, there should be some underlying relationships between them that incite viewer’s curiosity.
+
+We can use such finding to recommend movie B to a user if he/she already saw A (or vice versa).
+
+We set the support threshold to `0.001`, i.e the pair is watched together by at least `{r round(num_users * 0.001)}`.
+
+We set the minimum confidence (the likelihood that is a user watched movie A they also watch movie B) to 70%.
+
+
+```{r build_the_model, paged.print=FALSE}
+
+rule_params <- list(
+    supp = 0.001,
+    conf = 0.7,
+    maxlen = 2
+)
+assoc_rules <- apriori(user_item_matrix, parameter = rule_params)
+summary(assoc_rules)
+# don't need this anymore
+rm(user_item_matrix)
+```
+
+Given so many rules, we filter only those that have a lift greater than 4.25
+
+
+```{r assoc_rules_lift}
+rules_df <- as(assoc_rules, 'data.frame')
+quantile(rules_df$lift, probs=c(0.25, 0.50, 0.75))
+
+rules_df <- rules_df %>% 
+    filter(lift >= 4.25) %>% 
+    modify_if(is.double, round, digits=3)
+rm(assoc_rules, rule_params)
+
+rules_df %>% 
+    sample_n(10)
+```
+
+This is a terrible way to extract the movie ids
+
+```{r extract_movie_ids}
+
+# convert {705} -> {95} to 705,95
+samp <- rules_df %>% 
+    sample_n(1000)
+rules = sapply(samp$rules,function(x){
+    x = gsub("[\\{\\}]", "", regmatches(x, gregexpr("\\{.*\\}", x))[[1]])
+    x = gsub("=>",",",x)
+    x = str_replace_all(x," ","")
+    return( x )
+})
+
+head(rules)
+
+# remove column names from vector
+rules = as.character(rules)
+head(rules)
+rules = str_split(rules,",")
+head(rules)
+
+samp$lhs_movie = sapply(rules, "[[", 1)
+samp$rhs_movie = sapply(rules , "[[", 2)
+
+samp$rules = NULL
+# and you still have to convert them to integers
+samps$lhs_movie = as.numeric(samp$lhs_movie)
+samps$rhs_movie = as.numeric(samp$rhs_movie)
+samp %>% 
+    head()
+rm(samp)
+rm(rules)
+gc()
+
+```
+
+
+```{r extract_movie_ids_the_tidy_way}
+movie_id_pattern = '\\{([0-9]+)\\} => \\{([0-9]+)\\}'
+
+tibble(movie=c('{567} => {671}')) %>%
+    extract(movie, movie_id_pattern, into=c('lhs_movie', 'rhs_movie'), convert = T)
+
+rules_df <- rules_df %>% 
+    # this will remove the rules column
+    extract(rules, movie_id_pattern, into=c('lhs_movie', 'rhs_movie'), convert = T)
+rm(movie_id_pattern)
+head(rules_df)
+write_rds(rules_df, '../staging/rules_df.rds')
+rules_df <- read_rds('../staging/rules_df.rds')
+```
+
+
+```{r add_movie_titles, paged.print=TRUE}
+n_cols <- ncol(movies)
+start_col <- ncol(rules_df) + 1
+rules_df %>% left_join(movies, by=c('lhs_movie' = 'movieId')) %>% 
+    head()
+start_col:(n_cols - 2)
+# titles and years for left hand side
+# rules_df <- 
+rules_df <- rules_df %>% left_join(movies, by=c('lhs_movie' = 'movieId')) %>% 
+    rename_at(start_col:(start_col + n_cols - 2), ~str_c('left_', .))
+
+colnames(rules_df)
+start_col <- ncol(rules_df) + 1
+# and the right hand side
+rules_df <- rules_df %>% left_join(movies, by=c('rhs_movie' = 'movieId')) %>% 
+    rename_at(start_col:(start_col + n_cols - 2), ~str_c('right_', .))
+
+colnames(rules_df)
+rm(n_cols, start_col)
+write_rds(rules_df, '../staging/rules_df.rds')
+```
+
+
+```{r top_rules_with_highest_lift}
+rules_df %>% 
+    arrange(desc(lift)) %>% 
+    select(left_title, left_year, right_title, right_year, lift, count) %>% 
+    head(n=50)
+```
+
+TODO: identiy sequels
+
+
+Lets look at modern movies that led users to view the older film.
+
+```{r old_new}
+rules_df %>% 
+    filter(left_year > 2000 & right_year < 1990) %>%
+    arrange(desc(lift)) %>% 
+    select(left_title, left_year, right_title, right_year, lift) %>% 
+    head(100)
+```
+
+
+Many Ghibli’s films and Japanese animations appear here. It looks like modern Japanese animations have enough power to draw viewers into their own world.
+
+In contrast, only few Disney animations top the chart, which can be because they are watched by nearly everyone, which resulted in lower lift scores.
+
+Quite surprised to see *Home on the Range* led viewers back to *The Little Mermaid*. Critical reception for the film is quite low. Maybe that reminded viewers of Disney’s renaissance era?
+
+
+Next we calculate the number of common genres among two films.
+
+
+```{r common_genres}
+colnames(rules_df)
+```
+
+
+```{r common_genres_exploration}
+samp <- rules_df %>% 
+    sample_n(10)
+
+# 1 is rowwise
+apply(samp, 1, function(x){
+    as.numeric(x[12:29])
+})
+
+apply(samp, 1, function(x) {
+    as.numeric(x[34:51])
+})
+
+apply(samp, 1, function(x){
+    as.numeric(x[12:29]) & as.numeric(x[34:51])
+})
+
+apply(samp, 1, function(x){
+    sum(as.numeric(x[12:29]) & as.numeric(x[34:51]))
+})
+
+rm(samp)
+```
+
+
+```{r common_genres}
+rules_df$common_genre <- apply(rules_df, 1, function(x){
+    sum(as.numeric(x[12:29]) & as.numeric(x[34:51]))
+})
+```
+
+
+```{r save_and_load_rules_df}
+write_rds(rules_df, '../staging/rules.rds')
+rules_df <- read_rds('../staging/rules.rds')
+```
+
+
+Then, we mine for a movie that led viewers to a totally different kind of movie (i.e `common_genre = 0`).
+
+We will stick to modern films which span across different years.
+
+
+```{r different_movies, paged.print=TRUE}
+library(stringdist)
+rules_df <- rules_df %>% 
+    mutate(recent = left_year > 2000 & right_year > 2000)
+
+rules_df %>% 
+    filter(common_genre == 0, recent == TRUE, abs(left_year - right_year) >= 5) %>% 
+    arrange(desc(lift)) %>% 
+    select(left_title, left_year, right_title, right_year, lift)
+
+```
+
+
+Can we identify sequels
+
+```{r heuristics}
+assoc_rules = assoc_rules %>%
+    filter(!(
+        grepl("[0-9]", left.title, perl = TRUE) &
+            grepl("[0-9]", right.title, perl = TRUE)
+    )) %>%
+    filter(!(
+        grepl("Thin Man", left.title, perl = TRUE) &
+            grepl("Thin Man", right.title, perl = TRUE)
+    )) %>%
+    filter(substr(
+        left.title,
+        start = 1,
+        stop = min(5, str_length(left.title), str_length(right.title))
+    ) != substr(
+        right.title,
+        start = 1,
+        stop = min(5, str_length(left.title), str_length(right.title))
+    )) %>%
+    arrange(desc(lift))
+
+head(
+    assoc_rules %>% select(
+        left.title,
+        left.year,
+        right.title,
+        right.year,
+        support,
+        confidence,
+        lift
+    ),
+    10
+)
+```
+
+
+```{r}
+rules_df <- rules_df %>% 
+    mutate(
+        movie_dist = stringdist::stringdist(left_title, right_title, method='lv')
+    )
+
+rules_df %>% 
+    filter(movie_dist > 0) %>% 
+    arrange(movie_dist) %>% 
+    select(left_title, right_title, movie_dist) %>% 
+    head(100)
+```
+
+
+
+Lastly, we can use association rules to recommend a potential movie
+
+```{r define_movie_search}
+movie_search <- function(title) {
+    rules_df %>% 
+    filter(str_detect(left_title, title) | str_detect(right_title, title)) %>% 
+    arrange(desc(lift)) %>% 
+    select(left_title, left_year, right_title, right_year, support, confidence, lift, common_genre)
+}
+```
+
+
+
+```{r use_movie_search, paged.print=TRUE}
+movie_search('Let the Right One In')
+```
+
+
+
