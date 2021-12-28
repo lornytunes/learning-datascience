@@ -1,0 +1,288 @@
+---
+title: "Gradient Boost"
+output: github_document
+editor_options: 
+    chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(xgboost)
+source('lib/decision_trees.R')
+source('lib/regression.R')
+options(digits = 5)
+```
+
+
+## Iris Example
+
+Example Suppose you have a dataset of petal and sepal measurements for three varieties of iris. The object is to predict whether a given iris is a setosa based on its petal and sepal dimensions.
+
+```{r load_and_split_iris_data}
+iris <- as_tibble(iris)
+iris <- iris %>% 
+    mutate(class = as.integer(Species == 'setosa'))
+set.seed(2345)
+train_indexes <- runif(nrow(iris)) < 0.75
+iris_train <- iris %>% 
+    filter(train_indexes)
+iris_test <- iris %>% 
+    filter(!train_indexes)
+rm(train_indexes)
+
+```
+
+### Cross Validating to determine model size
+
+```{r determine_model_size}
+input <- as.matrix(iris_train[, 1:4])
+# work out when to stop adding trees to the ensemble
+cv <- xgb.cv(
+    input,
+    # class labels must also be numeric. 1 for setosa, 0 for not setosa
+    label = iris_train$class,
+    # loss function is logistic for binary classification, reg:linear for regression
+    params = list(
+        objective = 'binary:logistic'
+    ),
+    # 5 fold cross-validation
+    nfold = 5,
+    # build an ensemble of 100 trees
+    nrounds = 100,
+    # prints a message every 10th iteration
+    # print_every_n = 10,
+    verbose = FALSE,
+    # for regression use rmse
+    metrics = 'logloss'
+)
+
+```
+
+```{r inspect_model_size}
+# training and cross validated log loss as a function of the number of trees
+eval_df <- as_tibble(cv$evaluation_log) %>% 
+    mutate(iter = as.integer(iter))
+head(eval_df)
+
+```
+
+```{r plot_model_size}
+# finds the number of trees that gave the minimum cross-validated log loss
+nrounds <- which.min(eval_df$test_logloss_mean)
+
+eval_df %>% 
+    ggplot(aes(x = iter, y = test_logloss_mean)) +
+    geom_line() +
+    geom_vline(xintercept = nrounds, color = 'darkred', linetype = 2) +
+    scale_x_continuous(breaks = seq(0, 100, 10)) +
+    ggtitle('Cross validated log loss as a function of ensemble size')
+
+```
+
+### Fitting an `xgboost` model
+
+```{r fitting_xg_boost_model}
+model <- xgboost(
+    data = input,
+    label = iris_train$class,
+    params = list(
+        objective = 'binary:logistic',
+        eval_metric = 'error'
+    ),
+    nrounds = nrounds,
+    verbose = FALSE
+)
+test_input <- iris_test %>% 
+    select(-Species, -class) %>% 
+    as.matrix()
+pred <- predict(model, test_input)
+accuracyMeasures(pred, iris_test$class)
+```
+
+The model predicts perfectly on the holdout data, because this is an easy problem. Now that you are familiar with the steps, you can try xgboost on a harder problem: the movie review classification problem
+
+```{r iris_cleanup}
+rm(cv, eval_df, input, iris_test, iris_train, model, nrounds, pred, iris, test_input)
+```
+
+
+## Gradient boosting for text classification
+
+For this example, you will classify movie reviews from the Internet Movie Database (IMDB). The task is to identify positive reviews.
+
+
+```{r load_imdb_test_and_train_data}
+source('lib/imdb.R')
+imdb_train <- read_rds('data/IMDBtrain.rds')
+imdb_test <- read_rds('data/IMDBtest.rds')
+```
+
+```{r imdb_label}
+imdb_train %>% 
+    count(labels)
+```
+
+```{r imdb_summary}
+imdb_train[1,1]
+```
+
+
+
+### Convert training data into a document-term matrix
+
+```{r create_vocabulary}
+vocab <- create_pruned_vocabulary(imdb_train$text)
+head(vocab)
+```
+
+
+```{r create_dt_matrix}
+dtm_train <- make_matrix(imdb_train$text, vocab)
+dim(dtm_train)
+```
+
+### Determine the number of trees
+
+```{r determine_number_of_trees}
+cv <- xgb.cv(
+    dtm_train,
+    label = imdb_train$labels,
+    params = list(
+        objective = 'binary:logistic'
+    ),
+    nfold = 5,
+    nrounds = 500,
+    # stop early if performance doesn't improve for 20 rounds
+    early_stopping_rounds = 20,
+    print_every_n = 10,
+    metrics = 'logloss'
+)
+eval_df <- as_tibble(
+    cv$evaluation_log
+)
+eval_df <- eval_df %>% 
+    mutate(iter = as.integer(iter))
+
+nrounds <- which.min(eval_df$test_logloss_mean)
+# or
+eval_df %>% 
+    filter(near(test_logloss_mean, min(test_logloss_mean)))
+```
+
+```{r save_intemediate_cv_evaluation}
+write_rds(eval_df, 'staging/imdb_cv_eval.rds')
+eval_df <- read_rds('staging/imdb_cv_eval.rds')
+```
+
+
+
+### Fit and evaluate the model
+
+```{r fit_model}
+model <- xgboost(
+    data = dtm_train,
+    label = imdb_train$labels,
+    params = list(
+        objective = 'binary:logistic'
+    ),
+    nrounds = nrounds,
+    verbose = FALSE
+)
+summary(model)
+
+```
+
+```{r evaluate_model_on_train}
+pred <- predict(model, dtm_train)
+perf_table <- accuracyMeasures(pred,imdb_train$labels, name = 'training')
+perf_table
+```
+
+```{r evaluate_model_on_test}
+dtm_test <- make_matrix(imdb_test$text, vocab)
+pred <- predict(model, dtm_test)
+perf_table <- bind_rows(
+    perf_table,
+    accuracyMeasures(pred, imdb_test$labels, name = 'test')
+)
+
+perf_table
+```
+
+
+As with random forests, this gradient-boosted model gives near-perfect performance on training data, and less-than-perfect, but still decent performance on holdout data.
+
+```{r plot_imdb_model_size}
+eval_df %>% 
+    ggplot(aes(x = iter, y = test_logloss_mean)) +
+    geom_line() +
+    geom_vline(xintercept = nrounds, color = 'darkred', linetype = 2) +
+    ggtitle('Cross validated log loss as a function of ensemble size')
+```
+
+Experiment with different numbers of trees to see if that reduces overfitting
+
+
+```{r imdb_cleanup}
+rm(imdb_test, imdb_train, vocab, dtm_train)
+```
+
+
+## Categorical Variables
+
+
+```{r load_natality_data}
+train <- read_rds('data/birth_train.rds')
+test <- read_rds('data/birth_test.rds')
+```
+
+```{r select_input_variables}
+input_vars <- setdiff(colnames(train), c('birth_weight'))
+train %>% 
+    select(all_of(input_vars)) %>% 
+    str()
+```
+
+### Using `vtreat` to prepare data for xgboost
+
+```{r prepare_natality_data}
+treatment_plan <- vtreat::designTreatmentsZ(
+    train,
+    input_vars,
+    # create clean numeric variables, missingness indicators, indicator (lev) variables
+    # but not prevalence (catP) variables
+    codeRestriction = c('clean', 'isBAD', 'lev'),
+    verbose = FALSE
+)
+train_treated <- vtreat::prepare(
+    treatment_plan,
+    train
+)
+str(train_treated)
+```
+
+```{r fitting_natality_model}
+birthwt_model <- xgboost(
+    as.matrix(train_treated),
+    train$birth_weight,
+    params = list(
+        objective = 'reg:squarederror',
+        base_score = mean(train$birth_weight)
+    ),
+    nrounds = 50,
+    verbose = FALSE
+)
+```
+
+```{r examining_natality_model}
+test_treated <- vtreat::prepare(
+    treatment_plan,
+    test
+)
+train$pred <- predict(birthwt_model, as.matrix(train_treated))
+test$pred <- predict(birthwt_model, as.matrix(test_treated))
+RSQ(train$birth_weight, train$pred)
+RSQ(test$birth_weight, test$pred)
+
+```

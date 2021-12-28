@@ -1,0 +1,372 @@
+---
+title: "Customer Churn with XG Boost"
+output: github_document
+editor_options: 
+    chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(xgboost)
+options(digits = 4)
+```
+
+
+## Customer Churn
+
+```{r churn_etl, message=FALSE}
+churn_status <- read_csv(
+    ',,/data/Telco_customer_churn_status.csv'
+)
+churn_services <- read_csv(
+    '../data/Telco_customer_churn_services.csv'
+)
+churn_demographics <- read_csv(
+    '../data/Telco_customer_churn_demographics.csv'
+)
+churn_location <- read_csv(
+    '../data/Telco_customer_churn_location.csv'
+)
+
+churn_data <- churn_status %>% 
+    inner_join(churn_services, by = 'Customer ID') %>% 
+    inner_join(churn_demographics, by = 'Customer ID') %>% 
+    inner_join(churn_location, by = 'Customer ID') %>% 
+    rename(
+        CustomerID = `Customer ID`,
+        Churn = `Churn Label`
+    ) %>% 
+    select(!starts_with('Count.')) %>% 
+    select(!starts_with('Quarter.')) %>% 
+    select(-`Lat Long`) %>% 
+    # lose the columns from exit interviews (i.e those that left)
+    select(!starts_with('Churn '), -`Satisfaction Score`, -CLTV)
+
+churn_data <- churn_data %>% 
+    modify_if(is.character, factor) %>% 
+    mutate(CustomerID = as.character(CustomerID))
+
+```
+
+
+```{r churn_levels}
+churn_data %>% 
+    select_if(is.factor) %>% 
+    map_df(~length(levels(.))) %>% 
+    pivot_longer(everything(), names_to = 'var') %>% 
+    arrange(value)
+# remove state and country
+churn_data <- churn_data %>% 
+    select(-Country, -State)
+
+churn_data %>% 
+    count(`Customer Status`)
+
+churn_data %>% 
+    count(Churn)
+
+churn_data %>% 
+    count(City, sort = TRUE)
+```
+
+
+```{r churn_names}
+churn_data <- churn_data %>% 
+    mutate(City = str_replace_all(City, ' ', '_')) %>% 
+    rename_with(~str_replace_all(., ' ', '_')) %>% 
+    rename(
+        Tech_Support = Premium_Tech_Support,
+    )
+
+churn_data <- churn_data %>% 
+    modify_at(vars(
+        Number_of_Referrals,
+        Tenure_in_Months,
+        Number_of_Dependents,
+        Avg_Monthly_GB_Download,
+        Total_Extra_Data_Charges,
+        Age,
+        Number_of_Dependents,
+    ), as.integer) %>% 
+    mutate(Zip_Code = factor(Zip_Code), City=factor(City))
+
+skimr::skim(churn_data)
+```
+
+
+
+
+### Missing Data
+
+```{r view_missing_data_counts}
+churn_data %>% 
+    map_df(~sum(is.na(.))) %>% 
+    pivot_longer(everything(), names_to = 'var', values_to = 'na_count') %>% 
+    filter(na_count > 0) %>% 
+    arrange(desc(na_count))
+```
+
+```{r factor_counts}
+churn_data %>% 
+    select_if(is.factor) %>% 
+    map_df(~length(levels(.))) %>% 
+    pivot_longer(everything(), names_to = 'Factor', values_to = 'Levels') %>% 
+    arrange(desc(Levels))
+
+```
+
+
+```{r pseudo_replication}
+churn_data %>% 
+    select(-Zip_Code, -City, -Churn) %>% 
+    select_if(is.factor) %>% 
+    map(function(x) xtabs(~Churn+x, data = churn_data))
+
+```
+
+
+
+```{r remove_redundant_variable}
+churn_data <- churn_data %>% 
+    select(-Customer_Status)
+```
+
+
+```{r create_binary_label}
+# convert churn into binary label
+churn_data <- churn_data %>% 
+    mutate(Churn = as.integer(ifelse(Churn == 'Yes', 1, 0))) %>% 
+    select(!starts_with('Churn'), Churn) %>% 
+```
+
+
+
+### Train/Test split
+
+```{r churn_test_train}
+set.seed(729375)
+rgroup <- base::sample(
+    c('train', 'test'),
+    nrow(churn_data),
+    prob = c(0.7, 0.3),
+    replace = TRUE
+)
+churn_train <- churn_data[rgroup == 'train',]
+churn_test <- churn_data[rgroup == 'test',]
+prop.table(xtabs(~Churn, data = churn_data))
+prop.table(xtabs(~Churn, data = churn_train))
+prop.table(xtabs(~Churn, data = churn_test))
+```
+
+```{r churn_initial_cleanup}
+rm(churn_demographics, churn_location, churn_services, churn_status, rgroup)
+```
+
+
+
+```{r churn_treatment_plan}
+parallel_cluster <- parallel::makeCluster(parallel::detectCores())
+input_vars <- setdiff(colnames(churn_train), c('Churn', 'CustomerID'))
+cross_frame_experiment <- vtreat::mkCrossFrameCExperiment(
+    churn_train,
+    varlist = input_vars,
+    outcomename = "Churn",
+    outcometarget = 1,
+    verbose = FALSE,
+    parallelCluster = parallel_cluster
+)
+
+churn_train_treated <- cross_frame_experiment$crossFrame
+treatment_plan <- cross_frame_experiment$treatments
+score_frame <- as_tibble(treatment_plan$scoreFrame) %>% 
+    mutate(rsq = round(rsq, 4), sig = round(sig, 4))
+score_frame
+
+score_frame %>% 
+    select(varName, origName, rsq, code, recommended) %>% 
+    filter(origName == 'City')
+```
+
+```{r estimate_number_of_trees}
+churn_train_dtm <- as.matrix(select(churn_train_treated, -Churn))
+cv <- xgb.cv(
+    churn_train_dtm,
+    label = churn_train_treated$Churn,
+    params = list(
+        objective = 'binary:logistic'
+    ),
+    nfold = 5,
+    nrounds = 500,
+    # stop early if performance doesn't improve for 20 rounds
+    early_stopping_rounds = 20,
+    verbose = FALSE,
+    metrics = 'logloss'
+)
+eval_df <- as_tibble(
+    cv$evaluation_log
+)
+eval_df %>% 
+    mutate(iter = as.integer(iter))
+
+nrounds <- which.min(eval_df$test_logloss_mean)
+
+
+eval_df %>% 
+    select(iter, ends_with('_mean')) %>% 
+    rename_with(~str_replace(., '_logloss_mean', '')) %>% 
+    pivot_longer(c(train, test), names_to = 'error', values_to = 'value') %>% 
+    ggplot(aes(x = iter, y = value)) +
+    geom_point() +
+    geom_line() +
+    geom_vline(xintercept = nrounds, colour = 'orangered', linetype = 'dashed') +
+    scale_y_continuous(limits = c(0, 0.75)) +
+    facet_wrap(~error, nrow = 2)
+```
+
+
+```{r fit_our_model}
+source('logistic.R')
+model <- xgboost(
+    data = churn_train_dtm,
+    label = churn_train_treated$Churn,
+    params = list(
+        objective = 'binary:logistic'
+    ),
+    nrounds = nrounds,
+    verbose = FALSE
+)
+churn_test_treated <- vtreat::prepare(
+    treatment_plan,
+    churn_test
+)
+churn_test_dtm <- as.matrix(select(churn_test_treated, -Churn))
+churn_train$pred <- predict(model, churn_train_dtm)
+churn_test$pred <- predict(model, churn_test_dtm)
+model_results <- bind_rows(
+    accuracyMeasures(churn_train$pred, churn_train$Churn, 'train'),
+    accuracyMeasures(churn_test$pred, churn_test$Churn, 'test')
+)
+model_results
+```
+
+
+```{r}
+WVPlots::ROCPlot(
+    churn_test,
+    xvar = 'pred',
+    truthVar = 'Churn',
+    truthTarget = 1,
+    title = 'Churn Test Performance'
+)
+```
+
+
+```{r double_density}
+WVPlots::DoubleDensityPlot(
+    churn_test,
+    'pred',
+    'Churn',
+    'Churn Test'
+)
+```
+
+
+
+```{r}
+source('logistic.R')
+cm <- confusion_matrix(
+    churn_test$Churn,
+    churn_test$pred,
+    0.5,
+    'Yes',
+    'No'
+)
+cm
+
+```
+
+
+```{r feature_importance, fig.width = 10, fig.height = 12}
+feature_names = colnames(churn_train_dtm)
+importance <- as_tibble(xgb.importance(
+    feature_names = feature_names,
+    model = model
+))
+importance %>% 
+    ggplot(aes(x = fct_reorder(Feature, Gain), y = Gain)) +
+    geom_col() +
+    labs(x = NULL) +
+    coord_flip()
+
+```
+
+
+```{r}
+important_features <- importance %>% 
+    arrange(desc(Gain)) %>% 
+    filter(Gain > 0.011) %>% 
+    .$Feature
+
+
+churn_train_dtm <- churn_train_treated %>% 
+    select(all_of(important_features)) %>% 
+    data.matrix()
+churn_test_dtm <- churn_test_treated %>% 
+    select(all_of(important_features)) %>% 
+    data.matrix()
+
+
+cv <- xgb.cv(
+    churn_train_dtm,
+    label = churn_train_treated$Churn,
+    params = list(
+        objective = 'binary:logistic'
+    ),
+    nfold = 5,
+    nrounds = 500,
+    # stop early if performance doesn't improve for 20 rounds
+    early_stopping_rounds = 20,
+    verbose = FALSE,
+    metrics = 'logloss'
+)
+
+nrounds <- which.min(cv$evaluation_log$test_logloss_mean)
+
+model <- xgboost(
+    data = churn_train_dtm,
+    label = churn_train_treated$Churn,
+    params = list(
+        objective = 'binary:logistic'
+    ),
+    nrounds = nrounds,
+    verbose = FALSE
+)
+churn_train$pred <- predict(model, churn_train_dtm)
+churn_test$pred <- predict(model, churn_test_dtm)
+bind_rows(
+    model_results,
+    accuracyMeasures(churn_train$pred, churn_train$Churn, 'train simple'),
+    accuracyMeasures(churn_test$pred, churn_test$Churn, 'test simple')
+)
+
+```
+
+
+
+```{r}
+score_frame %>% 
+    filter(varName %in% important_features)
+```
+
+
+
+```{r}
+WVPlots::ROCPlot(
+    churn_test,
+    'pred',
+    'Churn',
+    1,
+    'Churn Test - Simple Model'
+)
+```
