@@ -1,0 +1,624 @@
+---
+title: "Generalized Additive Models"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warning = FALSE,
+    message = FALSE,
+    cache = TRUE,
+    dpi = 100,
+    fig.width = 8,
+    fig.height = 5
+)
+options(digits = 4)
+library(tidyverse)
+library(zeallot)
+
+source(lib/regression.R)
+
+# converts a logit to a probability
+logit2p <- function(x) {
+    exp(x) / (1 + exp(x))
+}
+
+```
+
+## One dimensional regression example
+
+```{r preparing_artificial_data}
+set.seed(602957)
+
+df <- tibble(
+    x = rnorm(1000),
+    noise = rnorm(1000, sd = 1.5)
+) %>% mutate(y = 3 * sin(2 * x) + cos(0.75 * x) - 1.5 * (x ^ 2) + noise)
+head(df)
+```
+
+```{r split_into_train_and_test}
+select <- runif(1000)
+train <- df[select > 0.1,]
+test <- df[select <= 0.1,]
+```
+
+
+```{r apply_linear_model}
+lin_model <- lm(y ~ x, data = train)
+summary(lin_model)
+
+```
+
+
+```{r linear_model_rmse}
+train <- train %>% 
+    modelr::add_predictions(lin_model, var = 'lin_pred') %>% 
+    modelr::add_residuals(lin_model, var = 'lin_resid')
+
+train %>% 
+    summarise(rmse = RMSE(lin_resid))
+
+train %>% 
+    ggplot(aes(x = lin_pred, y = y)) +
+    geom_point(alpha = 0.3) +
+    # line of perfect prediction - prediction = actual
+    geom_abline()
+```
+
+The resulting model’s predictions are plotted versus true response in figure 10.14. As expected, it’s a very poor fit, with an R-squared of about 0.04.
+
+In particular, the errors are not homoscedastic: there are regions where the model systematically underpredicts and regions where it systematically overpredicts.
+
+If the relationship between x and y were truly linear (with independent noise), then the errors would be homoscedastic: the errors would be evenly distributed (mean 0) around the predicted value everywhere.
+
+```{r fit_a_non_linear_model}
+gam_model <- mgcv::gam(
+    # specify that x should be treated as a non-linear variable
+    y ~ s(x),
+    data = train
+)
+# check that the algorithm converged
+gam_model$converged
+
+summary(gam_model)
+
+```
+
+
+```{r non_linear_model_predictions}
+train <- train %>% 
+    modelr::add_predictions(gam_model, var = 'gam_pred') %>% 
+    modelr::add_residuals(gam_model, var = 'gam_resid')
+train %>% 
+    summarise(across(contains('resid'), RMSE))
+
+train %>% 
+    ggplot(aes(x = gam_pred, y = y)) +
+    geom_point(alpha = 0.3) +
+    geom_abline() +
+    labs(x = 'Predicted')
+
+```
+
+This fit is much better: the model explains over 80% of the variance (R-squared of 0.83), and the root mean squared error (RMSE) over the training data is less than half the RMSE of the linear model.
+
+Note that the points are distributed more or less evenly around the line of perfect prediction. The GAM has been fit to be homoscedastic, and any given prediction is as likely to be an overprediction as an underprediction.
+
+```{r comparing_linear_regression_and_gam}
+test <- test %>% 
+    modelr::add_predictions(lin_model, var = 'lin_pred') %>% 
+    modelr::add_residuals(lin_model, var = 'lin_resid') %>% 
+    modelr::add_predictions(gam_model, var = 'gam_pred') %>% 
+    modelr::add_residuals(gam_model, var = 'gam_resid')
+# compare the rmse of both models on the test data
+test %>% 
+    summarise(across(contains('resid'), RMSE))
+
+# compare the r-squared of both models
+sigr::wrapFTest(
+    test,
+    "lin_pred",
+    "y"
+)
+
+sigr::wrapFTest(
+    test,
+    "gam_pred",
+    "y"
+)
+
+```
+
+The GAM performed similarly on both training and test sets: RMSE of 1.40 on test versus 1.45 on training; R-squared of 0.78 on test versus 0.83 on training. So there’s likely no overfit.
+
+```{r plotting_the_gam_model}
+plot(gam_model)
+```
+
+You can extract the data points that were used to make this graph by using the `predict()` function with the argument `type = "terms"`.
+
+This produces a matrix where the ith column represents $s(x_{,i})$.
+
+
+```{r extracting_non_linear_relationships}
+sx <- predict(gam_model, type = 'terms')
+train <- train %>% 
+    mutate(sx = sx[,1])
+train %>% 
+    ggplot(aes(x = x)) +
+    geom_point(aes(y = y), alpha = 0.4) +
+    geom_line(aes(y = sx))
+
+head(train$gam_pred)
+
+```
+
+
+## Using a GAM on actual data
+
+```{r load_cdc_data}
+birth_data <- read_rds('data/birth_data.rds')
+
+birth_train <- birth_data %>% 
+    filter(ORIGRANDGROUP <= 5) %>% 
+    select(-ORIGRANDGROUP)
+
+birth_test <- birth_data %>% 
+    filter(ORIGRANDGROUP > 5) %>% 
+    select(-ORIGRANDGROUP)
+```
+
+
+```{r health_data_linear}
+
+form_lin <- as.formula(
+    'birth_weight ~ mothers_weight + pregnancy_weight_gain + mothers_age + number_of_prenatal_visits'
+)
+lin_model <- lm(form_lin, data = birth_train)
+summary(lin_model)
+```
+
+```{r health_data_gam}
+form_gam <- as.formula(
+    'birth_weight ~ s(mothers_weight) + s(pregnancy_weight_gain) + s(mothers_age) + s(number_of_prenatal_visits)'
+)
+gam_model <- mgcv::gam(form_gam, data = birth_train)
+summary(gam_model)
+```
+
+The GAM has improved the fit, and all four variables seem to have a non-linear relationship with birth weight, as evidenced by edfs all greater than 1. You could use `plot(gammodel)` to examine the shape of the `s()` functions; instead, let's compare them with a direct smoothing curve of each variable against mother’s weight.
+
+
+
+
+
+```{r birth_data_plots}
+# get the matrix of s() functions
+terms <- predict(gam_model, type = 'terms')
+
+# add the birth weight
+terms <- cbind(birth_weight = birth_train$birth_weight, terms)
+# shift all columns to be zero mean in order to make comparisons easy
+tframe <- as_tibble(scale(terms, center = TRUE, scale = FALSE))
+# make columns more reference friendly s(birth_weight) becomes sbirth_weight
+colnames(tframe) <-  gsub('[()]', '', colnames(tframe))
+# so far we have the predicted variables. add the input variables
+tframe <- bind_cols(
+    tframe,
+    birth_train %>% select(mothers_weight, pregnancy_weight_gain, mothers_age, number_of_prenatal_visits)
+)
+
+tframe %>% 
+    ggplot(aes(mothers_weight, birth_weight)) +
+    geom_smooth(se = FALSE) +
+    geom_point(aes(y = smothers_weight), alpha = 0.4)
+
+tframe %>% 
+    ggplot(aes(pregnancy_weight_gain, birth_weight)) +
+    geom_smooth(se = FALSE) +
+    geom_point(aes(y = spregnancy_weight_gain), alpha = 0.4)
+
+tframe %>% 
+    ggplot(aes(mothers_age, birth_weight)) +
+    geom_smooth(se = FALSE) +
+    geom_point(aes(y = smothers_age), alpha = 0.4)
+
+tframe %>% 
+    ggplot(aes(number_of_prenatal_visits, birth_weight)) +
+    geom_smooth(se = FALSE) +
+    geom_point(aes(y = snumber_of_prenatal_visits), alpha = 0.4)
+```
+
+
+Checking GAM model performance on holdout data
+
+```{r birth_data_predictions}
+birth_test <- birth_test %>% 
+    modelr::add_predictions(lin_model, var = 'pred_lin') %>% 
+    modelr::add_predictions(gam_model, var = 'pred_gam')
+
+birth_test <- birth_test %>% 
+    modelr::add_residuals(lin_model, var = 'resid_lin') %>% 
+    modelr::add_residuals(gam_model, var = 'resid_gam')
+
+# compare the RMSE of both models on the test data
+birth_test %>% 
+    summarise(across(starts_with('resid'), RMSE))
+
+# compare the rsquared of both models on the test data using sigr
+c('pred_lin', 'pred_gam') %>% map_dbl(~sigr::wrapFTest(birth_test, ., 'birth_weight')$R2)
+broom::tidy(gam_model)
+```
+
+```{r birth_cleanup}
+rm(birth_data, birth_train, birth_test, tframe, form_gam, gam_model)
+```
+
+
+
+## Wage data
+
+### Linear Polynomial
+
+```{r load_wage_data}
+Wage <- read_rds('data/wage.rds')
+```
+
+```{r wage_polynomial_scaled}
+# predict wage as a 4th degree polynomial of age
+fit_poly_1 <- lm(wage ~ poly(age, 4), data = Wage)
+broom::tidy(fit_poly_1) %>% 
+    mutate(std.error = round(std.error, 4), p.value = round(p.value, 4))
+```
+
+`poly()` returns a basis of ornothogonal polynomials.
+
+
+```{r}
+poly(Wage$age, 4, raw = TRUE) %>% 
+    head()
+
+poly(Wage$age, 4, raw = FALSE) %>% 
+    head()
+
+
+
+```
+
+```{r wage_polynomial}
+
+fit_poly_2 <- lm(wage ~ poly(age, 4, raw = T), data = Wage)
+broom::tidy(fit_poly_2) %>% 
+    mutate(std.error = round(std.error, 4), p.value = round(p.value, 4))
+```
+
+You could use the wrapper function `I()`
+
+```{r}
+fit_poly_3 <- lm(wage ~ age + I(age^2) + I(age^3) + I(age^4), data = Wage)
+```
+
+Or even this
+
+```{r}
+lm(wage ~ cbind(age, age^2, age^3, age^4), data = Wage)
+```
+
+
+Predict
+
+```{r}
+c(age_min, age_max) %<-% range(Wage$age)
+age.grid <- seq(age_min, age_max)
+age_pred <- tibble(
+    age = age.grid,
+) %>% modelr::add_predictions(fit_poly_1, var = 'pred_poly')
+
+Wage %>% 
+    ggplot(aes(x = age, y = wage)) +
+    geom_point(alpha = 0.3) +
+    geom_line(data = age_pred, aes(y = pred_poly), colour = 'orangered', size = 1)
+```
+
+TODO: Use `anova()` to assess optimal degree of polynomial.
+
+### Logistic Polynomial
+
+```{r logistic_polynomial}
+fit <- glm(I(wage > 250) ~ poly(age, 4), data = Wage, family = binomial)
+
+c(pred, se) %<-% predict(fit, newdata = list(age = age.grid), se = T)[1:2]
+se.bands <- logit2p(cbind(pred + 2 * se, pred - 2 * se))
+
+
+preds_df <- tibble (
+    age = age.grid,
+    pred = logit2p(pred),
+    pred_lower = se.bands[,2],
+    pred_upper = se.bands[,1]
+)
+
+wage_sample <- Wage %>% 
+    sample_frac(0.5) %>% 
+    select(age, wage) %>% 
+    mutate(high_earner = wage > 250)
+
+wage_sample %>% 
+    count(high_earner)
+
+preds_df %>% 
+    ggplot(aes(x = age, y = pred)) +
+    geom_point(
+        data = wage_sample,
+        aes(x = age, y = ifelse(high_earner, 0.20, 0), colour = high_earner),
+        alpha = 0.2
+    ) +
+    geom_ribbon(aes(ymin = pred_lower, ymax = pred_upper), colour = 'darkgray', fill = 'lightgray') +
+    geom_line() +
+    labs(y = NULL) +
+    ggtitle('Predicted probability of earning > 250000 p/a') +
+    coord_cartesian(ylim = c(0, 0.2))
+
+```
+
+Here we used the transformation $Pr(Y = 1|X) = \frac{exp(X\beta)}{1+exp(X\beta)}$
+
+### Fitting a step function
+
+```{r fitting_a_step_function}
+# creates a factir with 4 levels
+breaks <- cut(Wage$age, 4)
+table(breaks)
+breaks <- ggplot2::cut_interval(Wage$age, n = 4)
+table(breaks)
+fit <- lm(wage ~ breaks, data = Wage)
+broom::tidy(fit) %>% 
+    modify_if(is.numeric, round, digits = 2)
+```
+
+The function `cut()` returns an ordered categorical variable; the `lm()` function then creates a set of dummy variables for use in the regression. The `age<33.5` category is left out, so the intercept coefficient of `$94.16` can be interpreted as the average salary for those under 33.5 years of age, and the other coefficients can be interpreted as the average additional salary for those in the other age groups. We can produce predictions and plots just as we did in the case of the polynomial fit.
+
+TODO: predict using step function
+
+## Splines
+
+### Regression Spline
+
+In order to fit regression splines in R, we use the splines library.
+
+Regression splines can be fit by constructing an appropriate matrix of basis functions.
+
+The `bs()` function generates the entire matrix of `bs()` basis functions for splines with the specified set of knots.
+
+By default, cubic splines are produced.
+
+```{r regression_spline}
+library(splines)
+
+wage_sample <- Wage %>% 
+    sample_frac(0.4) %>% 
+    select(age, wage)
+
+range(wage_sample$age)
+fit <- lm(wage ~ bs(age, knots = c(25, 40, 60)), data = Wage)
+c(pred, se) %<-% predict(fit, newdata = list(age = age.grid), se = T)[1:2]
+
+
+se.bands <- cbind(pred + 2 * se, pred - 2 * se)
+
+
+preds_df <- tibble (
+    age = age.grid,
+    pred = pred,
+    pred_lower = pred - 2 * se,
+    pred_upper = pred + 2 * se
+)
+
+preds_df %>% 
+    ggplot(aes(x = age, y = pred)) +
+    geom_point(data = wage_sample, aes(x = age, y = wage), alpha = 0.2) +
+    geom_line(colour = 'orangered', size = 1) +
+    scale_y_continuous('Wage', limits = c(0, 350)) +
+    geom_line(aes(y = pred_lower), colour = 'steelblue') +
+    geom_line(aes(y = pred_upper), colour = 'steelblue') +
+    ggtitle('Wage as a function of age using a smoothing spline')
+```
+
+Three knots gives us a spline with six basis functions
+
+```{r}
+basis_fns <- bs(Wage$age, knots = c(25, 40, 60))
+dim(basis_fns)
+attr(basis_fns, 'knots')
+# or
+basis_fns <- bs(Wage$age, df = 6)
+dim(basis_fns)
+attr(basis_fns, 'knots')
+```
+
+### Fitting a natural spline
+
+```{r natural_spline}
+fit <- lm(wage ~ ns(age, knots = c(25, 40, 60)), data = Wage)
+c(pred, se) %<-% predict(fit, newdata = list(age = age.grid), se = T)[1:2]
+
+
+se.bands <- cbind(pred + 2 * se, pred - 2 * se)
+
+
+preds_df <- tibble (
+    age = age.grid,
+    pred = pred,
+    pred_lower = pred - 2 * se,
+    pred_upper = pred + 2 * se
+)
+
+preds_df %>% 
+    ggplot(aes(x = age, y = pred)) +
+    geom_point(data = wage_sample, aes(x = age, y = wage), alpha = 0.2) +
+    geom_line(colour = 'orangered', size = 1) +
+    scale_y_continuous(limits = c(0, 350)) +
+    geom_line(aes(y = pred_lower), colour = 'steelblue') +
+    geom_line(aes(y = pred_upper), colour = 'steelblue') +
+    ggtitle('Wage as a function of age using a natural spline')
+```
+
+
+### Fitting a smooth spline
+
+```{r smooth_spline}
+# this determines the value of lamdda that results in 16 degrees of freedom
+fit1 <- with(Wage, smooth.spline(age, wage, df = 16))
+fit1$df
+fit1$lambda
+# selected the value of lambda via cross validation
+fit2 <- with(Wage, smooth.spline(age, wage, cv = TRUE))
+fit2$df
+fit2$lambda
+
+```
+
+### Local regression
+
+```{r}
+# each neighborhood consists of 20% and 50% of the observations
+# the default is degree 2 - a polynomial
+fit20 <- loess(wage ~ age, span = 0.2, data = Wage)
+fit50 <- loess(wage ~ age, span = 0.5, data = Wage)
+
+df_pred <- tibble(
+    age = age.grid
+)
+df_pred <- df_pred %>% 
+    mutate(l20 = predict(fit20, df_pred), l50 = predict(fit50, df_pred))
+
+df_pred %>% 
+    ggplot(aes(x = age)) +
+    geom_point(data = wage_sample, mapping = aes(x = age, y = wage), alpha = 0.2) +
+    geom_line(aes(y = l20), size = 1, colour = 'orangered') +
+    geom_line(aes(y = l50), size = 1, colour = 'steelblue')
+```
+
+## GAMs
+
+```{r gam_natural_splines}
+
+# natural splines
+gam1 <- lm(wage ~ ns(year, 4) + ns(age, 5) + education, data = Wage)
+gam::plot.Gam(gam1)
+```
+
+
+
+```{r gam_smoothing_splines}
+# smoothing splines
+gam2 <- gam::gam(wage ~ s(year, 4) + s(age, 5) + education, data = Wage)
+gam::plot.Gam(gam2, se = TRUE, col = 'blue')
+```
+
+### An example with strongly humped data
+
+
+```{r ethanol}
+
+ethanol <- read_rds('data/ethanol.rds')
+skimr::skim(ethanol)
+```
+
+
+The ethanol dataframe contains 88 sets of measurements for variables from an experiment in which ethanol was burned in a single cylinder automobile test engine. The response variable, NOx, is the concentration of nitric oxide (NO) and nitrogen dioxide (NO2) in engine exhaust, normalized by the work done by the engine, and the two continuous explanatory variables are C (the compression ratio of the engine), and E (the equivalence ratio at which the engine was run, which is a measure of the richness of the air–ethanol mix).
+
+
+```{r ethanol_plot_e}
+ethanol %>% 
+    ggplot(aes(E, NOx)) +
+    geom_point() +
+    labs(
+        x = 'The equivalence ratio at which the engine was run',
+        y = 'Concentration of Nitrogen oxide and dioxide in engine exhaust'
+    )
+```
+
+The compression ratio is a factor
+
+```{r ethanol_c}
+ethanol %>% 
+    count(C)
+```
+
+
+Because NOx is such a strongly humped function of the equivalence ratio, E, we start with a model, `NOx~s(E)+C`, that fits this as a smoothed term and estimates a parametric term for the compression ratio:
+
+
+```{r ethanol_model}
+model <- mgcv::gam(NOx ~ s(E) + C, data = ethanol)
+mgcv::plot.gam(model, residuals = T, pch = 16, all.terms = T)
+
+```
+
+The `coplot` function is helpful in showing where the effect of C on NOx was most marked:
+
+```{r ethanol_coplot, fig.height = 7}
+coplot(NOx~C|E, data = ethanol, panel = panel.smooth)
+```
+
+There is a pronounced positive effect of C on NOx only in panel 2 (ethanol `0.7 < E < 0.9` from the shingles in the upper panel), but only slight effects elsewhere (most of the red lines are roughly horizontal).
+
+You can estimate the interaction between E and C from the product of the two variables:
+
+
+```{r ethanol_model_2}
+# make sure you have package akima installed
+ethanol <- ethanol %>% 
+    mutate(CE = C * E)
+model2 <- mgcv::gam(NOx ~ s(E) + s(CE), data = ethanol)
+mgcv::plot.gam(model2, residuals = T, pch = 16)
+```
+
+
+```{r}
+summary(model2)
+```
+
+The summary of this GAM shows highly significant terms for both smoothed terms: the effect of ethanol, `s(E)`, on 7.6 estimated degrees of freedom, and the interaction between E and C, `s(CE)`, on 4.55 estimated degrees of freedom. The model explains a highly impressive `97.3%` of the deviance in NOx concentration.
+
+
+## Motorcycle Crash data
+
+A data frame giving a series of measurements of head acceleration in a simulated motorcycle accident, used to test crash helmets.
+
+```{r mcycle_data}
+mcycle <- as_tibble(MASS::mcycle)
+skimr::skim(mcycle)
+```
+
+
+```{r mcycle_plot}
+mcycle %>% 
+    ggplot(aes(times, accel)) +
+    geom_point() +
+    scale_y_continuous(limits = c(-150, 100)) +
+    labs(
+        x = 'Milliseconds after impact',
+        y = 'Head acceleration in g'
+    )
+```
+
+
+```{r mcycle_lm}
+lm_mod <- lm(accel~times, data = mcycle)
+stats::termplot(lm_mod, partial.resid = T, se = T)
+```
+
+
+```{r}
+gam_mod <- mgcv::gam(accel ~ s(times), data = mcycle)
+coef(gam_mod)
+mgcv::plot.gam(gam_mod)
+```
+
+
+
+
