@@ -1,0 +1,347 @@
+---
+title: "Random Forest Tuning with Tree Caretaker Data"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warning = FALSE,
+    message = FALSE,
+    fig.width = 8,
+    fig.height = 5,
+    dpi = 100
+)
+library(tidyverse)
+library(tidymodels)
+library(vip)
+```
+
+## Load data
+
+See the [read me](https://github.com/rfordatascience/tidytuesday/blob/master/data/2020/2020-01-28/readme.md) for more info
+
+```{r load_data, warning=TRUE}
+sf_trees <- read_csv(
+    'data/sf_trees.csv',
+    col_types = cols(
+        tree_id = col_integer(),
+        date = col_date(format = '%Y-%m-%d'),
+        site_order = col_integer()
+    )
+)
+sf_trees
+
+```
+
+## Explore data
+
+```{r}
+sf_trees %>% count(legal_status, sort = TRUE)
+sf_trees %>% count(site_info, sort = TRUE)
+sf_trees %>% count(caretaker, sort = TRUE)
+# are they different?k
+sf_trees %>% count(legal_status, caretaker, sort = TRUE)
+# plot size
+sf_trees %>% na.omit() %>% select(plot_size)
+# here is a quick way to extract the first numeric value
+sf_trees %>% na.omit() %>% select(plot_size) %>% 
+    mutate(plot_size = parse_number(plot_size))
+
+```
+
+```{r etl}
+# convert legal status is a binary response variable
+trees_df <- sf_trees %>% 
+    mutate(
+        legal_status = case_when(
+            legal_status == 'DPW Maintained' ~ legal_status,
+            TRUE ~ 'Other'),
+        plot_size = parse_number(plot_size)
+    ) %>% 
+    # lose the address
+    select(-address) %>% 
+    # and the missing values
+    na.omit() %>% 
+    # convert character columns to factors
+    mutate_if(is.character, factor)
+# response variable
+prop.table(xtabs(~legal_status, data = trees_df))
+rm(sf_trees)
+```
+
+
+```{r}
+skimr::skim(trees_df)k
+```
+
+Lets make a map
+
+```{r lat_long_plot}
+trees_df %>% 
+    ggplot(aes(x = longitude, y = latitude, colour = legal_status)) +
+    geom_point(size = 0.5, alpha = 0.4) +
+    labs(colour = NULL)
+```
+
+```{r view_legal_status_proportions_by_caretaker}
+# use add_count
+trees_df %>% 
+    filter(caretaker == 'Arts Commission') %>% 
+    select(legal_status, caretaker)
+
+caretakers_50 <- trees_df %>% 
+    count(legal_status, caretaker) %>% 
+    # add the overall counts for caretaker.
+    add_count(caretaker, wt = n, name = 'caretaker_count') %>% 
+    # those who maintain at least 50 trees
+    filter(caretaker_count > 50)
+
+# totals for each legal status
+caretakers_50 %>% 
+    group_by(legal_status) %>% 
+    summarise(sum = sum(n))
+    
+caretakers_50 %>% 
+    group_by(legal_status) %>% 
+    # for each level of legal status and caretaker, get its proportion
+    # of the respective legal status
+    mutate(percent_legal = n / sum(n)) %>% 
+    # and plot those proportions for each level of caretaker
+    ggplot(aes(percent_legal, caretaker, fill = legal_status)) +
+    geom_col(position = 'dodge')
+# so private caretakers handle 88% of other and 4% of DWP maintained
+```
+
+## Build Model
+
+```{r split_test_train}
+set.seed(123)
+
+trees_split <- initial_split(
+    trees_df,
+    strata = legal_status
+)
+trees_split
+trees_train <- training(trees_split)
+trees_test <- testing(trees_split)
+```
+
+
+```{r data_preprocessing}
+# use step other to collapse factors into fewer levels
+tree_rec <- recipe(legal_status ~ ., data = trees_train) %>% 
+    # not an outcome or a predictor
+    update_role(tree_id, new_role = 'ID') %>% 
+    step_other(species, caretaker, threshold = 0.01) %>% 
+    step_other(site_info, threshold = 0.005)
+tree_prep <- prep(tree_rec)
+juiced <- juice(tree_prep)
+
+juiced %>% count(species, sort = TRUE)
+juiced %>% count(caretaker, sort = TRUE)
+juiced %>% count(site_info, sort = TRUE)
+trees_train %>% count(species, sort = TRUE)
+```
+
+```{r data_preprocessing_2}
+# collapse factors and convert to indicator variables
+# and extract year from date
+tree_rec <- recipe(legal_status ~ ., data = trees_train) %>% 
+    # not an outcome or a predictor
+    update_role(tree_id, new_role = 'ID') %>% 
+    step_other(species, caretaker, threshold = 0.01) %>% 
+    step_other(site_info, threshold = 0.005) %>% 
+    step_dummy(all_nominal(), -all_outcomes()) %>% 
+    # extract year feature
+    step_date(date, features = c('year')) %>% 
+    # no longer need the date
+    step_rm(date) %>% 
+    # make occurences of each level equal
+    themis::step_downsample(legal_status)
+
+tree_prep <- prep(tree_rec)
+juiced <- juice(tree_prep)
+juiced %>% 
+    count(legal_status)
+
+```
+
+```{r inspect_recipes}
+# recipe steps (not trained)
+tree_rec
+# tree prep knows about the training data and has it already done
+tree_prep
+```
+
+
+
+## Build the Model
+
+```{r define_what_the_model_will_be}
+tune_spec <- rand_forest(
+    # TBA
+    mtry = tune(),
+    trees = 500,
+    # minimum number of data points in a node
+    # i.e. when to stop splitting
+    min_n = tune()
+) %>% 
+    set_mode('classification') %>% 
+    # implementation
+    set_engine('ranger')
+```
+
+
+```{r define_the_workflow}
+tune_wf <- workflow() %>% 
+    add_recipe(tree_rec) %>% 
+    add_model(tune_spec)
+
+tune_wf
+```
+
+### Train the hyperparameters
+
+
+```{r kfold_cross_validation}
+set.seed(234)
+trees_fold <- vfold_cv(trees_train)
+trees_fold
+doParallel::registerDoParallel()
+set.seed(345)
+tune_res <- tune_grid(
+    # tune this workflow
+    tune_wf,
+    # on these k-folds
+    resamples = trees_fold,
+    grid = 20
+)
+write_rds(tune_res, '../staging/trees_tune.rds')
+tune_res
+
+```
+
+```{r tuned_parameters}
+tune_res %>% collect_metrics()
+tune_res %>% select_best('accuracy')
+```
+
+```{r visualize_metrics}
+tune_res %>% 
+    collect_metrics() %>% 
+    filter(.metric == 'roc_auc') %>% 
+    select(mean, min_n, mtry) %>% 
+    pivot_longer(min_n:mtry, values_to='value', names_to='parameter') %>% 
+    ggplot(aes(value, mean, colour = parameter)) +
+    geom_point(show.legend = FALSE) +
+    geom_line() +
+    scale_y_continuous(limits = c(0.9, 0.95)) +
+    facet_wrap(~parameter, scales = 'free_x')
+
+
+```
+
+```{r tune_again}
+rf_grid <- grid_regular(
+    mtry(range = c(10, 30)),
+    min_n(range = c(2, 8)),
+    levels = 5
+)
+set.seed(345)
+regular_res <- tune_grid(
+    # tune this workflow
+    tune_wf,
+    # on these k-folds
+    resamples = trees_fold,
+    grid = rf_grid
+)
+write_rds(regular_res, '../staging/tree_tune_regular.rds')
+regular_res <- read_rds('../staging/tree_tune_regular.rds')k
+```
+
+```{r}
+metrics <- collect_metrics(regular_res) %>% 
+    filter(.metric == 'roc_auc') %>% 
+    mutate(min_n = factor(min_n))
+metrics
+```
+
+
+
+```{r}
+metrics %>%  
+    # plot the mean as a function of mtry for
+    # different levels of min_n
+    ggplot(aes(mtry, mean, colour = min_n)) +
+    geom_point() +
+    geom_line(alpha = 0.5, size = 1.5) +
+    scale_y_continuous(limits = c(0.94, 0.95)) +
+    scale_x_continuous(breaks = seq(10, 40, 5)) +
+    labs(y = 'Average AUC')
+```
+
+
+
+```{r update_model_with_tuned_parameters}
+best_auc <- select_best(regular_res, 'roc_auc')
+# update the model - replace the parameters to be tuned
+# the the parameters we have found
+final_rf <- finalize_model(
+    tune_spec,
+    best_auc
+)
+```
+
+
+```{r variable_importance}
+# reset model to calculate variable importance and fit
+tree_train <- juice(tree_prep) %>% 
+    select(-tree_id)
+final_rf %>% 
+    # reset engine with variable importance calculation
+    set_engine('ranger', importance = 'permutation') %>% 
+    # fit to training data
+    fit(legal_status ~ ., data = tree_train) %>% 
+    # plot variable importance
+    vip(geom = 'point')
+```
+
+How does it do on the holdout data
+
+```{r test_on_holdout_data}
+# our definitive workflow with the finalized model
+final_wf <- workflow() %>% 
+    add_recipe(tree_rec) %>% 
+    add_model(final_rf)
+
+# take the final best model, fit to the training set and evalute the test set
+final_res <- final_wf %>% 
+    last_fit(trees_split)
+
+final_res %>% 
+    collect_metrics()
+```
+
+One last thing..
+
+```{r}
+# predictions on the test set
+final_res %>% 
+    collect_predictions() %>% 
+    mutate(correct = case_when(
+        legal_status == .pred_class ~ 'Correct',
+        TRUE ~ 'Incorrect'
+    )) %>% 
+    bind_cols(trees_test) %>% 
+    ggplot(aes(longitude, latitude, colour = correct)) +
+    geom_point(size = 0.5, alpha = 0.6) +
+    labs(colour = NULL) +
+    scale_colour_manual(values = c('gray80', 'darkred'))
+```
+
+
+
+
+
+
