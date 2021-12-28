@@ -1,0 +1,467 @@
+---
+title: "Data Exploration with IPIS Mining Data"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    dpi = 100,
+    fig.width = 12,
+    fig.height = 6,
+    message = F,
+    error = F,
+    warning = F,
+    cache = F
+)
+
+options(digits = 3)
+```
+
+
+```{r libraries, include=FALSE}
+library('tidyverse')
+library('lubridate')
+library('leaflet')
+# library('scales')
+```
+
+## Getting the Data
+
+IPIS Open Data can be obtained through the [IPIS Open Data portal](http://ipisresearch.be/home/conflict-mapping/maps/open-data/), which also provides notes on how to download the data, a Data Dictionary explaining the different columns used, information on the Open Data license and other contextual information. IPIS regularly adds new data to this dataset, as well as to its online webmaps.
+
+
+
+```{r load_data}
+data <- read_csv(
+    "data/ipis.csv",
+    # na=c(""),
+    col_types=cols(
+        cid=col_integer(),
+        vid=col_integer(),
+        source=col_factor(),
+        project=col_factor(),
+        province=col_factor(),
+        mineral1=col_factor(),
+        mineral2=col_factor(include_na=T),
+        is_gold_mine=col_logical(),
+        is_3t_mine=col_logical(),
+        mercury=col_logical(),
+        presence=col_logical(),
+        interference=col_logical(),
+        visit_onsite=col_logical(),
+        visit_date=col_date(format='%Y-%m-%d'),
+        workers_numb=col_integer(),
+        visit_onsite_novisitreason=col_character(),
+        state_service1=col_character(),
+        state_service3=col_character(),
+        state_service4=col_character(),
+        womenwork=col_character(),
+        access_dry=col_character(),
+        access_wet=col_character(),
+        childunder15work=col_character()
+    )
+)
+```
+
+## Getting to know the data
+
+### Missing values
+
+```{r data_missing_values}
+data %>% map_int(function(col){sum(is.na(col))})
+```
+
+### The Visit
+
+
+```{r data_visit}
+data %>% 
+    select('source', 'project', 'visit_date') %>% 
+    summary()
+```
+
+### The mine
+
+```{r data_mine}
+data %>% 
+    select('name', 'pcode', 'longitude', 'latitude', 'province', 'workers_numb') %>% 
+    summary()
+```
+
+
+### The minerals
+
+```{r data_minerals}
+data %>% 
+    select('is_gold_mine', 'is_3t_mine', 'mineral1', 'selling_points_mineral1', 'final_destination_mineral1', 'mercury') %>% 
+    summary()
+```
+
+### Armed groups
+
+```{r data_armed_groups}
+
+
+```
+
+
+### State Servies
+
+```{r data_state_services}
+data %>% 
+    select(starts_with('state_service')) %>% 
+    summary()
+
+```
+
+
+## Data exporation
+
+How many visits
+
+```{r visits}
+data %>% 
+    summarise(count_visits=n())
+```
+
+How many unique visits
+
+
+Since mines are uniquely identified using a pcode, and multiple revisits of the same mine can occur in this dataset, we can compute the number of mines visited (in stead of the number of visits) by only keeping the most recent visit per mine.
+
+
+```{r visits_unique}
+data %>%
+    # For each unique mine ...
+    group_by(pcode) %>%
+    # ... only continue with the most recent visit
+    arrange(desc(visit_date)) %>% slice(1) %>%
+    ungroup() %>%
+    # Then count all lines
+    summarise(count_mines = n())
+```
+
+```{r mines_with_multiple_visits}
+data %>% 
+    count(pcode, sort=T)
+```
+
+```{r visits_unique_breakdown}
+data %>% 
+    select(pcode, visit_date) %>% 
+    filter(pcode %in% c('codmine00917', 'codmine00068')) %>% 
+    group_by(pcode) %>% 
+    arrange(desc(visit_date)) %>% 
+    slice(1)
+```
+
+
+
+
+
+```{r visits_unique}
+data %>%
+    # For each unique mine ...
+    group_by(pcode) %>%
+    # ... only continue with the most recent visit
+    arrange(desc(visit_date)) %>% slice(1) %>%
+    ungroup() %>%
+    # Then count all lines
+    summarise(count_mines = n()) 
+```
+
+How many visits where carried out per year and per project?
+
+```{r visits_unique_by_year_and_project}
+data %>% 
+    group_by(source, project, year=year(visit_date)) %>% 
+    summarise(count_visits=n()) %>% 
+    arrange(year)
+```
+
+
+```{r visits_by_year_and_project_plot}
+data %>% 
+    group_by(source, project, year=year(visit_date)) %>% 
+    summarise(count_visits=n()) %>% 
+    arrange(year) %>% 
+    ggplot(aes(x=year, y=count_visits, fill=project)) +
+    geom_col() 
+```
+
+
+```{r visits_by_year_and_project_plot2}
+data %>% 
+    mutate(year=year(visit_date)) %>% 
+    ggplot(aes(x=as_factor(year), fill=project)) +
+    geom_bar()
+```
+
+
+```{r visits_by_year_and_project_plot3, fig.height=10}
+data %>% 
+    mutate(
+        year=year(visit_date),
+        is_ipis=ifelse(grepl('IPIS', project), 'IPIS', 'OTHER')
+    ) %>% 
+    # select(vid, visit_date, year, project, is_ipis)
+    ggplot(aes(x=as_factor(year), fill=project)) +
+    geom_bar() +
+    labs(x='Year', y='Number of visits', title='Visits by year and project') +
+    facet_grid(rows=vars(is_ipis))
+```
+
+How often have sites been visited?
+
+
+```{r multiple_site_visits}
+data %>% 
+    # for each site
+    group_by(pcode) %>% 
+    # count the number of visits
+    summarise(site_visits=n()) %>% 
+    # for possible number of visits
+    group_by(site_visits) %>% 
+    # count the number of sites
+    summarise(num_sites=n()) %>% 
+    arrange(site_visits)
+```
+
+## Separating datasets
+
+```{r}
+# Creating and cleaning IPIS dataset
+data_ipis <- data %>%
+    filter(grepl('IPIS', project)) %>% # Only visits during IPIS project
+    filter(!is.na(workers_numb) & workers_numb > 0) # Has workers
+# Creating and cleaning qualification dataset
+data_qualification <- data %>%
+    filter(project == 'Qualification status') # Only visits during qualification missions
+```
+
+
+How many mine visits has IPIS executed by province? How many of these visits were 3T mines and gold mines?
+
+
+
+```{r}
+data_ipis %>%
+    group_by(province) %>% # Do the following for each province
+    summarise(
+        # Count the number of visits = lines
+        count_visits = n(),
+        # Count the number of visits to 3T mines by summing the 1's this column contains for each 3T mine.
+        count_visits_3t = sum(is_3t_mine),
+        # Similar for gold mines
+        count_visits_gold = sum(is_gold_mine)
+    ) %>% 
+    arrange(desc(count_visits))
+```
+```{r}
+data %>% 
+    ggplot(aes(x=fct_infreq(province))) +
+    geom_bar() +
+    labs(x=NULL, y = 'Number of visits') +
+    coord_flip()
+```
+
+
+How long ago is the qualification of mines?
+
+```{r}
+fct_count(data_qualification$qualification)
+```
+
+
+```{r}
+fct_count(
+    fct_recode(
+        data_qualification$qualification,
+        'Not class' = 'No class'
+    )
+)
+```
+
+```{r}
+data_qualification <- data_qualification %>% 
+    mutate(
+        qualification_year=year(visit_date),
+        qualification=fct_recode(
+            qualification,
+            'Not class' = 'No class'
+        )
+    )
+```
+
+
+```{r qualification_date}
+data_qualification %>% 
+    group_by(qualification_year, qualification) %>% 
+    summarise(count_mines=n(), .groups='drop')
+```
+
+```{r qualification_year_plot, fig.width=8}
+data_qualification %>% 
+    ggplot(aes(x=factor(qualification_year), fill=qualification)) +
+    geom_bar() +
+    labs(x=NULL, y='Number of mines')
+```
+
+## Working with the most recent data
+
+
+```{r data_ipis_most_recent}
+data_ipis_lastvisit <- data_ipis %>% 
+    # for each mine
+    group_by(pcode) %>% 
+    # sort each subset by visit date in descending order (most recent first)
+    arrange(desc(visit_date)) %>%
+    # take the first item (i.e the most recent)
+    slice(1) %>% 
+    # remove the grouping - don't need it any more
+    ungroup()
+    
+```
+
+
+```{r data_qualification_last_visit}
+data_qualification_lastvisit <- data_qualification %>% 
+    group_by(pcode) %>% 
+    arrange(desc(visit_date)) %>% 
+    slice(1) %>% 
+    ungroup()
+```
+
+
+What is the average amount of workers for gold mines in the Mambasa territory, according to IPIS visits?
+
+```{r}
+data_ipis_lastvisit %>% 
+    filter(territoire == 'Mambasa',  is_gold_mine==1) %>% 
+    summarise(
+        sum = sum(workers_numb),
+        avg = mean(workers_numb),
+        median = median(workers_numb),
+        max = max(workers_numb),
+        min = min(workers_numb)
+    )
+```
+
+
+Which territory in the Kivu’s has the highest percentage of mines with interference according to IPIS visits?
+
+
+```{r}
+data_ipis_lastvisit %>%
+    filter(province %in% c("Nord-Kivu", "Sud-Kivu")) %>%
+    group_by(territoire) %>%
+    # The "na.rm = TRUE" code means that we discard the (small amount of) mines with no information ('NA')
+    # on the interference to compute this share.
+    summarise(share_mines_interference = mean(interference, na.rm = TRUE)) %>%
+    arrange(desc(share_mines_interference))
+```
+
+
+How does interference evolve over multiple visits to the same mine?
+
+```{r}
+# find some mines with multiple visits
+data %>% 
+    group_by(pcode) %>% 
+    summarise(count_visits=n(), .groups='drop_last') %>% 
+    top_n(5, count_visits)
+```
+
+
+```{r}
+# take a look at codmine00917
+data %>% 
+    filter(pcode=='codmine00917') %>% 
+    select(
+        name,
+        project,
+        visit_date,
+        workers_numb,
+        presence,
+        interference,
+        armed_group1,
+        armed_group2
+    )
+```
+
+It appears that FARDC elements have been recorded on and off, and that they had left the site by the time of the most recent visits.
+
+
+How does the number of workers change between the wet and dry season?
+
+```{r}
+data %>%
+    filter(project == "IPIS - PPA Mambasa 2017") %>%
+    transmute(
+        pcode,
+        visit_date,
+        period = ifelse(visit_date < "2017-04-01", "dry", "wet"),
+        workers_numb
+    ) %>%
+    group_by(period) %>%
+    summarise(
+        sum = sum(workers_numb),
+        avg = mean(workers_numb),
+        median = median(workers_numb),
+        .groups='drop_last'
+    )
+```
+
+The data shows that mines are typically less active during the wet period.
+
+## Weighing with number of workers
+
+How many workers work at mines with interference by an armed group according to IPIS visits?
+
+```{r}
+data_ipis_lastvisit %>%
+    group_by(interference) %>%
+    summarise(
+        count_mines = n(), 
+        count_workers = sum(workers_numb),
+        .groups='drop_last'
+    )
+```
+
+Which provinces have the highest number of mines with interference, or workers working at mines with interference, according to IPIS visits?
+
+```{r}
+data_ipis_lastvisit %>%
+    group_by(province) %>%
+    summarise(
+        count_mines = n(), 
+        count_mines_interference = sum(interference, na.rm = TRUE),
+        count_workers_interference = sum(interference * workers_numb, na.rm = TRUE),
+        share_mines_interference = mean(interference, na.rm = TRUE),
+        share_workers_interference = sum(interference * workers_numb, na.rm = TRUE) / sum(workers_numb)
+    ) %>%
+    arrange(desc(share_workers_interference))
+```
+
+
+
+An important note to be made here, and to be remembered in general, is that the IPIS data is not exhaustive (not all mines have been visited, and visits are not frequent) and is statistically biased (some projects have visited a specific subset of mines). Since in 2013-2014 and 2015 IPIS visited a large number of artisanal mining sites in eastern DRC, trying to cover as many sites as possible in all relevant territories, the visits in those years can be considered a fairly unbiased statistical sample. In 2016 and 2017, however, IPIS’s visits were more focused. The most important remarks in this context revolve around the following projects:
+
+- The ‘IOM 2016-2018’ project focused its mine visits in regions where mines had earlier been qualified by an official qualification mission, or where the ‘joint qualification mission’ planned future missions.
+- The ‘IPIS - PPA Mambasa 2017’ project had a very specific geographic and mineral focus, visiting only gold sites around Mambasa, selected because of its high density of mining sites and relatively low interference (at that point in time). Additionally, each site was visited two times as part of a follow up study, resulting in a high amount of visits with similar characteristics.
+
+This explains why there are many more qualified mines and remarkably fewer mines with interference in the subset of 2017 visits, when compared to earlier years with a high amount of visits.
+
+```{r}
+data_ipis_lastvisit %>%
+    mutate(year = year(visit_date)) %>%
+    group_by(year) %>%
+    summarise(
+        count_mines = n(), 
+        count_mines_interference = sum(interference, na.rm = TRUE),
+        share_mines_interference = mean(interference, na.rm = TRUE)
+    )
+```
+
