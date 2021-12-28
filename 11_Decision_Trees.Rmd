@@ -1,0 +1,390 @@
+---
+title: "Decision Trees"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = FALSE,
+    warning = FALSE,
+    fig.width = 8,
+    fig.height = 5
+)
+library(tidyverse)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+source('lib/decision_trees.R')
+options(digits = 4)
+```
+
+## Basic Ideas
+
+```{r basic_ideas}
+heart_data <- tibble(
+    chest_pain = factor(c('Yes', 'No', 'Yes', 'Yes', 'No', 'No', 'Yes', 'Yes')),
+    blocked_arteries = factor(c('Yes', 'Yes', 'No', 'Yes', 'Yes', 'Yes', 'No', 'Yes')),
+    weight = as.integer(c(205, 180, 210, 167, 156, 125, 168, 172)),
+    heart_disease = c(T, T, T, T, F, F, F, F)
+)
+heart_data
+```
+
+```{r single_tree_model}
+
+
+fmla <- wrapr::mk_formula(
+    'heart_disease',
+    setdiff(colnames(heart_data), 'heart_disease')
+)
+tree_model <- rpart(
+    fmla,
+    heart_data,
+    method = 'class',
+    control = rpart.control(minsplit = 1, minbucket = 1, cp = 0)
+)
+summary(tree_model)
+```
+
+```{r single_tree_plot}
+rpart.plot(tree_model, type = 5, extra = 6)
+```
+
+```{r single_tree_cleanup}
+rm(heart_data, tree_model, fmla)
+```
+
+
+
+## Conditional Entropy
+
+```{r bank_data_etl}
+bank <- read_delim(
+    'data/bank.csv',
+    delim = ';',
+    col_types = cols(
+        age = col_integer(),
+        balance = col_integer(),
+        day = col_integer(),
+        duration = col_integer(),
+        pdays = col_integer(),
+        campaign = col_integer(),
+        previous = col_integer()
+    )
+)
+bank <- bank %>%
+    modify_if(is.character, factor) %>% 
+    rename(subscribed=y)
+bank
+```
+
+
+```{r bank_summary}
+skimr::skim(bank)
+```
+ 
+
+```{r bank_sample}
+bank <- bank %>% 
+    sample_n(2000) %>% 
+    select(balance, job, marital, education, default, housing, loan, contact, poutcome, subscribed)
+```
+
+
+```{r response_variable}
+tbl_subscribed <- table(Subscribed=bank$subscribed)
+# P(Subscribed)
+prop.table(tbl_subscribed)
+```
+
+```{r conditional_variable}
+tbl_contact <- table(Contact=bank$contact)
+# P(Contact)
+prop.table(tbl_contact)
+```
+
+
+
+```{r subscribed_conditioned_on_contact}
+# P(Subscribed|Contact)
+tbl_subscribed_contact <- table(Subscribed=bank$subscribed, Contact=bank$contact)
+# column percentages
+round(prop.table(tbl_subscribed_contact, margin=2), 2)
+
+```
+
+```{r contact_subscribed_tree}
+summary(tree::tree(subscribed~contact, data=bank))
+```
+
+## Single Trees
+
+```{r spam_data}
+spam_data <- read_tsv(
+    'data/spam.tsv',
+    col_types = cols(
+        rgroup = col_integer(),
+        spam = col_factor(levels = c('non-spam', 'spam')),
+        capital.run.length.longest = col_integer(),
+        capital.run.length.total = col_integer()
+    )
+)
+spam_data <- spam_data %>% 
+    mutate(is_spam = spam == 'spam') %>% 
+    select(rgroup, everything(), spam, is_spam)
+
+# we want to predict spam, so non-spam = 0, spam = 1
+spam_data %>% 
+    count(spam)
+```
+
+```{r train_test_split}
+spam_train <- spam_data %>% 
+    filter(rgroup >= 10)
+
+spam_test <- spam_data %>% 
+    filter(rgroup < 10)
+```
+
+
+```{r fit_the_model}
+
+spam_vars <- setdiff(colnames(spam_data), list('rgroup', 'spam', 'is_spam'))
+spam_formula <- wrapr::mk_formula(
+    'is_spam',
+    spam_vars
+)
+
+tree_model <- rpart(
+    spam_formula,
+    spam_train,
+    method = 'class'
+)
+```
+
+
+```{r plot_the_tree_model, fig.width=10, fig.height=6}
+rpart.plot(tree_model, type = 5, extra = 6)
+```
+
+```{r model_evaluation}
+# two columns False:True. We want the 
+# predicted probabilities of the class 'spam'
+train_pred <- predict(tree_model, newdata = spam_train)[,2]
+test_pred <- predict(tree_model, newdata = spam_test)[,2]
+tree_scores <- bind_rows(
+    accuracyMeasures(train_pred, spam_train$is_spam, name = 'tree training'),
+    accuracyMeasures(test_pred, spam_test$is_spam, name = 'tree test')
+)
+tree_scores
+```
+
+
+As expected, the accuracy and F1 scores both degrade on the test set, and the deviance increases.
+
+
+## Bagging
+
+
+```{r bagging_setup}
+ntrain <- nrow(spam_train)
+n <- ntrain
+ntree <- 100
+# bootstrap samples by sampling the row indices of spam_train with replacement
+# each column will represent the row indices that comprise a bootstrap sample
+samples <- sapply(
+    1:ntree,
+    FUN = function(iter) {
+        sample(1:ntrain, size = n, replace = TRUE)
+    }
+)
+
+treelist <- lapply(
+    1:ntree,
+    FUN = function(iter) {
+        sample <- samples[, iter]
+        rpart(
+            spam_formula,
+            spam_train[sample,],
+            method = 'class'
+        )
+    }
+)
+
+```
+
+
+
+```{r run_bagging}
+train_pred <- predict_bag(
+    treelist,
+    newdata = spam_train
+)
+test_pred <- predict_bag(
+    treelist,
+    newdata = spam_test
+)
+
+tree_scores <- bind_rows(
+    tree_scores,
+    accuracyMeasures(train_pred, spam_train$is_spam, name = 'bagging training'),
+    accuracyMeasures(test_pred, spam_test$is_spam, name = 'bagging test')
+)
+tree_scores
+```
+
+
+As you see, bagging improves accuracy and F1, and reduces deviance over both the training and test sets when compared to the single decision tree (you’ll see a direct comparison of the scores a little later on). There is also less degradation in the bagged model’s performance going from training to test than there is with the decision tree.
+
+
+## Random Forests
+
+In bagging, the trees are built using randomized datasets, but each tree is built by considering the exact same set of features. This means that all the individual trees are likely to use very similar sets of features (perhaps in a different order or with different split values). Hence, the individual trees will tend to be overly correlated with each other. If there are regions in feature space where one tree tends to make mistakes, then all the trees are likely to make mistakes there, too, diminishing our opportunity for correction. The random forest approach tries to decorrelate the trees by randomizing the set of variables that each tree is allowed to use.
+
+```{r random_forest}
+set.seed(5123512)
+f_model <- randomForest(
+    x = spam_train[, spam_vars],
+    y = spam_train$spam,
+    # 100 trees to be compatible with our bagging example
+    ntree = 100,
+    # each node of a tree must have a minimum of 7 elements (compatible with rpart),
+    nodesize = 7,
+    # save information to be used for calculating variable importance
+    importance = TRUE
+)
+
+train_pred <- predict(
+    f_model,
+    newdata = spam_train[, spam_vars],
+    type = 'prob'
+)
+
+test_pred <- predict(
+    f_model,
+    newdata = spam_test[, spam_vars],
+    type = 'prob'
+)
+
+tree_scores <- bind_rows(
+    tree_scores,
+    accuracyMeasures(train_pred[, 'spam'], spam_train$is_spam, name = 'forest training'),
+    accuracyMeasures(test_pred[, 'spam'], spam_test$is_spam, name = 'forest test')
+)
+tree_scores
+
+```
+
+
+
+```{r performance_change}
+
+tree_scores %>% 
+    mutate(stage = factor(str_extract(model, '[a-z]+'))) %>% 
+    group_by(stage) %>% 
+    summarise(
+        across(is.numeric, ~abs(. - lag(.)), .names = "diff_{col}"),
+        .groups = 'drop_last'
+    ) %>% 
+    filter(!is.na(diff_accuracy))
+
+```
+
+The random forest’s model degraded about as much as a single decision tree when going from training to test data, and much more than the bagged model did. This is one of the drawbacks of random forest models: the tendency to overfit the training data. However, in this case, the random forest model was still the best performing.
+
+### Variable importance
+
+
+```{r variable_importance, fig.width = 8, fig.height = 10}
+var_imp <- importance(f_model)
+var_imp_df <- tibble(
+    var = rownames(var_imp),
+    var_imp
+)
+var_imp_df <- as_tibble(var_imp) %>% 
+    mutate(var = rownames(var_imp)) %>% 
+    select(var, everything())
+
+var_imp_df %>% 
+    ggplot(aes(x = fct_reorder(var, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+    geom_col() +
+    labs(x = NULL) +
+    coord_flip()
+```
+
+### Fitting with fewer variables
+
+
+```{r reducing_variables}
+var_imp_df <- var_imp_df %>% 
+    arrange(desc(MeanDecreaseAccuracy))
+selected_vars <- var_imp_df$var[1:30]
+f_sel <- randomForest(
+    x = spam_train[, selected_vars],
+    y = spam_train$spam,
+    ntree = 100,
+    nodesize = 7,
+    importance = TRUE
+)
+
+train_pred <- predict(
+    f_sel,
+    newdata = spam_train[, selected_vars],
+    type = 'prob'
+)
+
+test_pred <- predict(
+    f_sel,
+    newdata = spam_test[, selected_vars],
+    type = 'prob'
+)
+
+tree_scores <- bind_rows(
+    tree_scores,
+    accuracyMeasures(train_pred[, 'spam'], spam_train$is_spam, name = 'small forest training'),
+    accuracyMeasures(test_pred[, 'spam'], spam_test$is_spam, name = 'small forest test')
+)
+tree_scores
+```
+
+The smaller model performs just as well as the random forest model built using all 57 variables.
+
+
+## Exercises
+
+
+Consider the Gini index, classification error, and cross-entropy in a simple classification setting with two classes. Create a single plot that displays each of these quantities as a function of $\hat{p}_{m1}$.
+
+The *x-axis* should display $\hat{p}_{m1}$ , ranging from 0 to 1, and the *y-axis* should display the value of the Gini index, classification error, and entropy
+
+```{r ex3}
+# sequence of class probabilities from 0 to 1
+p1<-seq(0+1e-6, 1-1e-6, length.out=100)
+# its compliment
+p2<-1-p1
+samp <- round(rbind(p1, p2)[, 1:10], 2)
+samp
+# we'd choose the larger probability
+apply(samp, 2, max)
+# and the missclassifcation rate is the whats left
+1-apply(samp, 2, max)
+
+d <- tibble(
+    x=p1,
+    # The missclassification error-rate:
+    error = 1-apply(rbind(p1, p2), 2, max),
+    # the gini index
+    gini = p1*(1-p1)+p2*(1-p2),
+    # entropy
+    entropy = -(p1*log(p1)+p2*log(p2))
+)
+d %>% 
+    pivot_longer(c(error, gini, entropy), names_to = 'metric') %>% 
+    ggplot(aes(x, value, colour=metric)) +
+    geom_line() +
+    scale_x_continuous(limits=c(0, 1))
+rm(p1, p2, samp, d)
+```
+
+
