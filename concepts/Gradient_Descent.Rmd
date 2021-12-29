@@ -1,0 +1,120 @@
+---
+title: "Gradient Descent"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+
+$$
+y = 4 + 3 x + \epsilon
+$$
+
+```{r create_the_data}
+m <- 100
+# 100 numbers between 0 and 2
+data <- tibble(
+    X = 2 * runif(m)
+) %>%
+mutate(
+    y = (4 + 3 * X) + rnorm(m)
+)
+summary(data)
+```
+
+
+```{r define_the_loss_function}
+mse <- function(actual, predicted) {
+    sum((actual - predicted)^2)
+}
+```
+
+
+```{r predictor_matrix}
+# ones column for the intercept
+X_b <- cbind(
+    data$X,
+    rep(1, m)
+)
+head(X_b)
+```
+
+```{r initial_plot}
+p <- ggplot(data, aes(x = X, y = y)) +
+    geom_point() +
+    scale_x_continuous(limits = c(0, 2)) +
+    scale_y_continuous(limits = c(0, 12), breaks = 0:12) +
+    geom_abline(slope = 3, intercept = 4, color = 'steelblue')
+p
+```
+
+```{r initialize_the_parameters}
+theta <- runif(2)
+```
+
+
+```{r plot_the_initial_parameters}
+p <- p + geom_abline(slope = theta[1], intercept = theta[2], color = 'orangered')
+```
+
+Out predictions are $\mathbf{X}  \vec{\theta}$
+
+
+```{r initial_predictions}
+X_p <- X_b %*% theta
+head(X_p)
+```
+
+Now compute how far our predictions differ from our actual values: $X_e = X_p - y$
+
+
+```{r initial_error}
+X_e <- X_p - data$y
+head(X_e)
+```
+
+Now get the adjustments based on the gradient of our loss function:
+
+$$
+\frac{2}{m} \textbf{X} \cdot \epsilon
+$$
+```{r initial_gradient}
+# gradient: 2x100 . 100x1 -> 2x1
+(gradients <- (2/m) * t(X_b) %*% X_e)
+```
+
+```{r initial_parameter_update}
+# learning rate
+eta <- 0.01
+(theta <- theta - eta * gradients)
+```
+
+```{r plot_updated_estimates}
+p + geom_abline(slope = theta[1], intercept = theta[2], color = 'green')
+```
+
+Now run this until convergence (i.e the parameters no longer really change). For our purposes we will run it 100 times
+
+
+```{r run_gradient_descent}
+for(i in 1:100) {
+    # predict
+    X_p <- X_b %*% theta
+    # error
+    X_e <- X_p - data$y
+    # gradient
+    gradients <- (2/m) * t(X_b) %*% X_e
+    # move closer
+    theta <- theta - eta * gradients
+}
+```
+
+
+```{r plot_final_estimate}
+p + geom_abline(slope = theta[1], intercept = theta[2], color = 'darkred')
+```
+
+
