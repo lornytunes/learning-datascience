@@ -1,0 +1,121 @@
+---
+title: "Poisson Regression"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+## Fitting the Breslow seizure data
+
+Specifically, we’ll consider the impact of an antiepileptic drug treatment on the number of seizures occurring over an eight-week period following the initiation of therapy.
+
+Data were collected on the age and number of seizures reported by patients suffering from simple or complex partial seizures during an eight-week period before, and eight-week period after, randomization into a drug or placebo condition. `sumY` (the number of seizures in the eight-week period post-randomization) is the response variable.
+
+Treatment condition (`Trt`), age in years (Age), and number of seizures reported in the baseline eight-week period (Base) are the predictor variables.
+
+The baseline number of seizures and age are included because of their potential effect on the response variable. We are interested in whether or not evidence exists that the drug treatment decreases the number of seizures after accounting for these covariates.
+
+```{r load_breslow_data}
+breslow <- read_rds('data/breslow.rds')
+breslow %>% 
+    select(-ID) %>% 
+    skimr::skim()
+```
+
+```{r examine_response_variable}
+breslow %>% 
+    ggplot(aes(x=sumY)) +
+    geom_histogram(bins = 20) +
+    labs(x = 'Distribution of Seizures', y = NULL)
+```
+
+
+```{r}
+xtabs(~sumY, data = breslow)
+```
+
+
+```{r examine_predictor_variables, fig.width = 6, fig.height = 8}
+breslow %>% 
+    filter(sumY < 300) %>% 
+    ggplot(aes(x = Trt, y = sumY)) +
+    geom_boxplot() +
+    labs(x = 'Treatment', y = 'Seizures') +
+    ggtitle('Group Comparisons')
+
+```
+
+
+You can clearly see the skewed nature of the dependent variable and the possible presence of outliers.
+
+At first glance, the number of seizures in the drug condition appears to be smaller and have a smaller variance. (You’d expect a smaller variance to accompany a smaller mean with Poisson distributed data.)
+
+Unlike standard OLS regression, this heterogeneity of variance isn’t a problem in Poisson regression.
+
+
+```{r fit_model}
+model <- glm(sumY ~ Base + Age + Trt, data = breslow, family = poisson())
+coef <- broom::tidy(model) %>% 
+    mutate(p.value = round(p.value, 5))
+coef
+```
+
+```{r}
+model_params <- broom::glance(model)
+model_params
+```
+
+In a poisson regression the dependent variable being modeled is the log of the conditional mean $log_e(\lambda)$
+
+
+```{r}
+age <- 0.227
+exp(log(age))
+```
+
+The regression parameter 0.0227 for Age indicates that a one-year increase in age is associated with a 0.03 increase in the log mean number of seizures, holding baseline seizures and treatment condition constant.
+
+The intercept is the log mean number of seizures when each of the predictors equals 0.
+
+Because you can’t have a zero age and none of the participants had a zero number of baseline seizures, the intercept isn’t meaningful in this case.
+
+```{r}
+coef %>% 
+    mutate(estimate = round(exp(estimate), 3))
+```
+
+Now you see that a one-year increase in age multiplies the expected number of seizures by 1.023, holding the other variables constant. This means that increased age is associated with higher numbers of seizures.
+
+More importantly, a one-unit change in `Trt` (that is, moving from placebo to progabide) multiplies the expected number of seizures by 0.86. You’d expect a 20 percent decrease in the number of seizures for the drug group compared with the placebo group, holding baseline number of seizures and age constant.
+
+It’s important to remember that, like the exponeniated parameters in logistic regression, the exponeniated parameters in the Poisson model have a multiplicative rather than an additive effect on the response variable.
+
+Also, as with logistic regression, you must evaluate your model for overdispersion.
+
+
+```{r overdispersion}
+model_params %>% 
+    select(deviance, df.residual) %>% 
+    mutate(dispersion_ratio = deviance / df.residual)
+```
+
+```{r}
+qcc::qcc.overdispersion.test(
+    breslow$sumY,
+    type = 'poisson'
+)
+```
+
+```{r fit_with_quasi_poisson}
+model <- glm(sumY ~ Base + Age + Trt, data = breslow, family = quasipoisson())
+coef <- broom::tidy(model) %>% 
+    mutate(p.value = round(p.value, 5))
+coef
+```
+
+Notice that the parameter estimates in the quasi-Poisson approach are identical to those produced by the Poisson approach. The standard errors are much larger, though. In this case, the larger standard errors have led to p-values for `Trt` (and `Age`) that are greater than 0.05.
+
+When you take overdispersion into account, there’s insufficient evidence to declare that the drug regimen reduces seizure counts more than receiving a placebo, after controlling for baseline seizure rate and age.
