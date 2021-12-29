@@ -1,12 +1,12 @@
 ---
 title: "Quasi Separation"
-output: github_document
+output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
-options(digits = 4)
+options(digits = 3)
 ```
 
 
@@ -58,11 +58,6 @@ prop.table(xtabs(~fail, data=car_test))
 
 ```
 
-```{r save_car_train_and_test}
-write_rds(car_data, '../data/car_rating.rds')
-```
-
-
 ### Fit the regression model
 
 ```{r fit_car_model}
@@ -79,6 +74,7 @@ This warning indicates that the problem is quasi-separable: some set of variable
 In fact, this problem is simple enough that you can easily determine that a safety rating of low perfectly predicts that a car will fail the review.
 
 ```{r failure_counts_for_low_safety_cars}
+# all of these fail
 car_train %>%
     filter(safety == 'low') %>%
     count(fail)
@@ -86,28 +82,33 @@ car_train %>%
 
 However, even cars with higher safety ratings can get ratings of unacceptable, so the safety variable only predicts a subset of the data.
 
-```{r}
+```{r rating_by_safety}
 xtabs(~rating+safety, data = car_train)
+```
+An remember that fail is when the rating is `unacc`
+
+```{r fail_by_safety}
 xtabs(~fail+safety, data = car_train)
 ```
 
 
 
-```{r}
+
+```{r car_model_summary}
 summary(car_model)
 ```
 
 The variables `safetylow`, `persons4`, and `personsmore` all have unusually high magnitudes and very high standard errors. As mentioned earlier, `safetylow` always corresponds to an unacceptable rating, so `safetylow` is a strong indicator of failing the review. However, larger cars (cars that hold more people) are not always going to pass the review.
 
-It’s possible that the algorithm has observed that larger cars tend to be safer (get a safety rating better than safetylow), and so it is using the persons4 and personsmore variables to cancel out the overly high coefficient from safetylow.
+It’s possible that the algorithm has observed that larger cars tend to be safer (get a safety rating better than `safetylow`), and so it is using the `persons4` and `personsmore` variables to cancel out the overly high coefficient from `safetylow`.
 
 In addition, you can see that the number of Fisher scoring iterations is unusually high; the algorithm did not converge.
 
 This problem is fairly simple, so the model may predict acceptably well on the test set; however, in general, when you see evidence that `glm()` did not converge, you should not trust the model.
 
 ```{r}
-coef_df <- broom::tidy(car_model)
-coef_df %>%
+broom::tidy(car_model) %>%
+    # remove the intercept
     slice(-1) %>%
     ggplot(aes(x = term, y = estimate)) +
     geom_pointrange(aes(ymin = 0, ymax = estimate)) +
@@ -121,7 +122,7 @@ In the plot, coefficients that point to the right are positively correlated with
 
 
 ```{r logistic_model_evaluation_routine}
-# print confutions matrix, accuracy and deviance
+# print confusion matrix, accuracy and deviance
 confmat <- function(dframe, predvar) {
     cmat <- table(
         truth = ifelse(dframe$fail, "unacceptable", "passed"),
