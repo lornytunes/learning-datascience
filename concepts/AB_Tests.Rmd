@@ -1,12 +1,12 @@
 ---
 title: "A/B Tests"
-output: github_document
+output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
-options(digits=3)
+options(digits=4)
 ```
 
 
@@ -26,13 +26,12 @@ ab_data %>%
 
 
 ```{r ab_contingency_table}
-tab <- xtabs(~group + converted, data = ab_data)
-tab
+(tab <- xtabs(~group + converted, data = ab_data))
 ```
 
 The contingency table is what statisticians call a sufficient statistic: it contains all we need to know about the experiment outcome. 
 
-We can print the observed conversion rates of the A and B groups.
+We can print the observed conversion rates of the A and B groups using the row proportions.
 
 ```{r ab_conversion_rates}
 # conversion rates are in column 1
@@ -45,9 +44,11 @@ prop.table(tab, 1)
 ```
 
 
-We see that the A group was measured at near 5%, and the B group was measured at near 6%. What we want to know is this: can we trust this difference? Could such a difference be likely for this sample size due to mere chance and measurement noise? We need to calculate a significance to see if we ran a large enough experiment (obviously, we’d want to design an experiment that was large enough—what we call test power). What follows are a few good tests that are quick to run.
+We see that the A group was measured at near 5%, and the B group was measured at near 6%. What we want to know is this: can we trust this difference? Could such a difference be likely for this sample size due to mere chance and measurement noise? We need to calculate a significance to see if we ran a large enough experiment (obviously, we’d want to design an experiment that was large enough—what we call test power).
 
-```{r chisq_test, paged.print=FALSE}
+What follows are a few good tests that are quick to run.
+
+```{r chisq_test_stats}
 addmargins(tab)
 # converted totals are the column sums
 (nconverted <- margin.table(tab, margin = 2))
@@ -55,31 +56,44 @@ addmargins(tab)
 (ngroup <- margin.table(tab, margin = 1))
 # Expected = RxC / G
 (expected <- (ngroup %*% t(nconverted)) / sum(tab))
-ngroup %*% t(nconverted)
-dim(ngroup)
+```
 
-addmargins(expected)
+```{r chisq_test_compute}
 # differences between observed and expected
 (cvals <- (tab - expected)^2/expected)
 # sum them
 (cstat <- sum(cvals))
-1 - pchisq(cstat, 1)
+```
+
+```{r chisq_test_evaluation}
+# very low p-value
+round(1 - pchisq(cstat, 1), 4)
+# note the complimentary signs
 sign(tab - expected)
+# run the test in r
 res <- chisq.test(tab, correct = FALSE)
 broom::glance(res)
-rm(nconverted, ngroup, expected, cvals, cstat)
+```
+
+```{r chisq_test_cleanup}
+rm(nconverted, ngroup, expected, cvals, cstat, res)
 ```
 
 
-
-```{r ab_fisher_test}
-# conversion odds - the odds of conversion given the group
+```{r conversion_counts}
 tab
+```
+
+```{r compute_odds_ratio}
+# conversion odds - the odds of conversion given the group
 (odds <- tab[,1]/tab[,2])
 # and the odds ratio is
 (odds[1] / odds[2])
-fisher.test(tab)
+```
 
+
+```{r ab_fisher_test}
+fisher.test(tab)
 ```
 
 This is a great result. The p-value (which in this case is the probability of observing a difference this large if we in fact had A=B) is `2.469e-05`, which is very small. This is considered a significant result.
@@ -87,6 +101,8 @@ This is a great result. The p-value (which in this case is the probability of ob
 The other thing to look for is the odds ratio: the practical importance of the claimed effect (sometimes also called clinical significance, which is not a statistical significance).
 
 An odds ratio of 1.2 says that we’re measuring a 20% relative improvement in conversion rate between the A and B groups. Whether you consider this large or small (typically, 20% is considered large) is an important business question.
+
+
 
 ```{r frequentist_significance}
 pbinom(
