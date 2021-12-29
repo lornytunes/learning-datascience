@@ -1,0 +1,812 @@
+---
+title: "Support Vector Machines"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    fig.width = 8,
+    fig.height = 5,
+    dpi = 100,
+    messages = F,
+    warning = F,
+    cache = F
+)
+library(tidyverse)
+library(kernlab)
+library(e1071)
+library(zeallot)
+```
+
+## Hyperplanes
+
+
+Start with the equation of a straight line
+
+$$
+f(x) = a x + b
+$$
+
+Now think of this as a function of *two* variables
+
+$$
+x_2 = a x_1 + b
+$$
+
+Which becomes
+
+$$
+a x_1 - x_2 + b = 0
+$$
+
+And if you define the two-dimensional vectors $\vec{x} = (x_1, x_2)$ and $\vec{w} = (a, - 1)$ then the equation for a line becomes
+
+$$
+\textbf{w} \cdot \textbf{x} + b = 0
+$$
+
+And this works for vectors of any number of dimensions. This is the matrix-vector equation of a hyperplane.
+
+A hyperplane is the __set of points__ satisfying $\textbf{w} \cdot \textbf{x} + b = 0$
+
+We derived the equation of a hyperplane from the equation of a line. Doing the opposite is interesting, as it shows us more clearly the relationship between the two.
+
+Given vectors $\textbf{w} = (w_0, w_1), \textbf{x} = (x, y)$ and b, we can define the hyperplance having the equation:
+
+$$
+\textbf{w} \cdot \textbf{x} + b = 0
+$$
+
+Which gives
+
+$$
+w_0 x + w_1 y + b = 0 \\
+w_1 y = -w_0 x - b
+$$
+
+When we isolate y we get
+
+$$
+y = - \frac{w_0}{w_1} x - \frac{b}{w_1}
+$$
+
+Let $a = -\frac{w_0}{w_1}$ and $c = -\frac{b}{w_1}$ and you get
+
+$$
+y = ax + c
+$$
+
+
+This means that the bias *c* of the line equation is only equal to the bias *b* of the hyperplance euqation when $w_1 = -1$. Also if $w_0$ and $w_1$ have the same sign, the slope *a* will be negative
+
+
+
+```{r seperable_data}
+data <- tibble(
+    x1 = as.integer(c(1, 2, 2, 4, 4, 7, 8, 4, 4, 7, 8, 9, 9, 10)),
+    x2 = as.integer(c(3, 5, 7, 4, 6, 5, 3, 8, 10, 10, 7, 6, 7, 10)),
+    class = factor(c(rep('blue', 7), rep('red', 7)))
+)
+p1 <- data %>% 
+    ggplot(aes(x1, x2, colour = class, shape = class)) +
+    geom_point(size = 2) +
+    scale_x_continuous(breaks = 0:12, limits = c(0, 12)) +
+    scale_y_continuous(breaks = 0:12, limits = c(0, 12)) +
+    ggtitle('A linearly separable dataset')
+p1
+```
+
+
+Now with a vector $w = (0.4, 1.0)$ and $b = -9$ we get
+
+```{r}
+# converts weights back into slope and intercept
+w2poly <- function(w, b) {
+    list(slope = -(w[1] / w[2]), intercept = -(b / w[2]))
+}
+w <- c(0.4, 1.0)
+b = -9
+c(slope, intercept) %<-% w2poly(w, b)
+p1 + geom_abline(slope = slope, intercept = intercept)
+rm(slope, intercept)
+```
+
+Each vector $x_i$ has a label $y_i$, which has the value `+1` for red or `-1` for blue.
+
+
+And we classify as follows $h(x_i) = +1$ if $\textbf{w} \cdot \textbf{x} + b \ge 0$
+and $h(x_i) = -1$ if $\textbf{w} \cdot \textbf{x} + b < 0$
+
+And this is equivalent to:
+
+$$
+h(x_i) = sign(\textbf{w} \cdot \textbf{x}_i + b)
+$$
+
+```{r}
+
+# add the b component to the weight vector
+w <- c(w, b)
+
+# augment the data matrix with a ones column
+X <- data %>%
+    select(x1, x2) %>% 
+    add_column(b = rep(1, nrow(data))) %>% 
+    data.matrix()
+
+# encode our class as -1, 1
+data <- data %>% 
+    mutate(y = as.integer(ifelse(class == 'red', 1, -1)))
+
+# classify the points. 1x3 . 3xn = 1xn
+h_x = sign(w %*% t(X))
+data %>% 
+    mutate(
+        prediction = as.integer(h_x)
+    )
+```
+
+
+If we have a hyperplane that separates the data set like the one above, by using the hypothesis function *h*, we are able to predict the label of every point perfectly.
+
+The main question is: how do we find such a hyperplane?
+
+Note that $w = (a, -1, b)$. Given that w contains both *a* and *b* which are the two main compoenents that define the look of the line. Changing the value of *w* gives us different hyperplanes (lines)
+
+### The Perceptron learning algorithm
+
+The hypothesis function of the perceptron is $h(x) = sign(w \cdot x)$ where $w \cdot x$ is the equation of the hyperplane.
+
+Given a set of *n-diminsional* training expamles $(\textbf{x}_i, y_i)$ where $y_i \in \{-1, 1\}$ we want to find h (i.e the weights) shuch that $h(\textbf{x}_i) = y_i$ for every $\textbf{x}_i$
+
+```{r pa_routines}
+# the hypothesis function
+hypothesis <- function(x, w) {
+    as.numeric(sign(w %*% x))
+}
+
+predict <- function(X, y, w, HYP) {
+    # apply our hypothesis function to each row of our training data
+    predictions <- apply(X, 1, HYP, w)
+    # filter out those that are misclassified
+    which(predictions != y)
+}
+
+pick_one <- function(misclassified, X, y) {
+    # select a training sampe at random from our
+    # list of misclassified samples
+    idx <- sample(misclassified, 1)
+    list(x = as.numeric(X[idx,]), expected_y = y[idx])
+}
+
+update_rule <- function(expected_y, w, x) {
+    # if the epxected label is -1 increase the angle
+    w + x * expected_y
+}
+x <- c(1, 2, 7)
+w <- c(4, 5, 3)
+expected_y <- -1
+# predicted y is currently 1
+hypothesis(w, x)
+# apply upddate rule
+w <- update_rule(expected_y, w, x)
+# and predicted again
+hypothesis(w, x)
+x <- c(1, 3)
+expected_y = -1
+w <- c(5, 3)
+hypothesis(w, x)
+w <- update_rule(expected_y, w, x)
+hypothesis(w, x)
+# go agina
+w <- update_rule(expected_y, w, x)
+hypothesis(w, x)
+
+
+rm(x, w, expected_y)
+```
+
+
+```{r pa_1}
+perceptron_learning_algorithm <- function(X, y) {
+   # initialize w
+    w <- c(-3, 4, 2)
+    # get rows currently missclassified
+    misclassified <- predict(X, y, w, hypothesis)
+    for(i in 1:1000) {
+        # pick one at random
+        c(x, expected_y) %<-% pick_one(misclassified, X, y)
+        # update weights
+        w <- update_rule(expected_y, w, x)
+        # how are we doing?
+        misclassified <- predict(X, y, w, hypothesis)
+    }
+    return(w)
+}
+
+
+# we have X, so pull out y (our labels)
+y <- data %>% 
+    pull(y)
+
+# check
+w <- c(-3, 4, 2)
+preds <- apply(X, 1, hypothesis, w)
+preds
+y
+# which ones don't match
+misclassified <- which(preds != y)
+# pick one
+idx <- sample(misclassified, 1)
+# get the corresponding x and y from our training data
+x <- X[idx,]
+expected_y <- y[idx]
+# and we are currently misclassifying it
+hypothesis(w, x)
+# so update the weights
+w <- w + x * expected_y
+# and see how we are doing
+hypothesis(w, x)
+# repeat as necessary
+```
+
+
+## Spiral Example
+
+```{r spirals_plot, fig.width = 8, fig.height = 8}
+data(spirals)
+spirals_df <- tibble(
+    x = spirals[, 1],
+    y = spirals[, 2],
+    # use kernlab spectral clustering routine to identify the two different
+    # spirals in the example dataset
+    class = as.factor(kernlab::specc(spirals, centers = 2))
+)
+spirals_df %>% 
+    ggplot(aes(x = x, y = y, colour = class, label = class)) +
+    geom_text() +
+    scale_colour_manual(values = c('#d95f02', '#1b9e77')) +
+    coord_fixed() +
+    theme_bw()
+```
+
+```{r svn_with_linear_kernel, fig.width = 8, fig.height = 8}
+set.seed(2335246L)
+spirals_df <- spirals_df %>% 
+    mutate(group = sample.int(100, size = nrow(spirals_df), replace = TRUE))
+
+train <- spirals_df %>% 
+    filter(group > 10)
+test <- spirals_df %>% 
+    filter(group <= 10)
+svm_model <- svm(
+    class ~ x + y,
+    data = train,
+    kernel = 'linear',
+    type = 'nu-classification'
+)
+# predictions on held out data
+test <- test %>% 
+    modelr::add_predictions(svm_model, var = 'lin_pred')
+# use model on grid of points to represent background shading
+# to indicate the learned concept
+shading <- expand.grid(
+    x = seq(-1.5, 1.5, by = 0.01),
+    y = seq(-1.5, 1.5, by = 0.01)
+)
+
+shading <- shading %>% 
+    modelr::add_predictions(svm_model, var = 'lin_pred')
+```
+
+```{r spiral_plot}
+ggplot(mapping = aes(x = x, y = y)) +
+    geom_tile(data = shading, aes(fill = lin_pred), show.legend = FALSE, alpha = 0.5) +
+    scale_color_manual(values = c("#d95f02", "#1b9e77")) +
+    scale_fill_manual(values = c("white", "#1b9e77")) +
+    geom_text(data = test, aes(label = lin_pred), size = 12) +
+    geom_text(data = spirals_df, aes(label = class, colour = class), alpha = 0.7) +
+    coord_fixed() +
+    theme_bw() +
+    theme(legend.position = 'none') +
+    ggtitle('Linear kernel')
+```
+
+
+The figure shows the total dataset in a small font and the SVM classifications of the test dataset in large text. It also indicates the learned concept by shading. The SVM didn’t produce a good model with the identity kernel, as it was forced to pick a linear separator.
+
+
+```{r gaussian_kernel}
+svm_model <- svm(
+    class ~ x + y,
+    data = train,
+    kernel = 'radial',
+    type = 'nu-classification'
+)
+# predictions on held out data
+test <- test %>% 
+    modelr::add_predictions(svm_model, var = 'rad_pred', type = 'response')
+# use model on grid of points to represent background shading
+# to indicate the learned concept
+
+shading <- shading %>% 
+    modelr::add_predictions(svm_model, var = 'rad_pred', type = 'response')
+```
+
+
+```{r gaussian_kernel_plot, fig.width = 8, fig.height = 8}
+ggplot(mapping = aes(x = x, y = y)) +
+    geom_tile(data = shading, aes(fill = rad_pred), show.legend = FALSE, alpha = 0.5) +
+    scale_color_manual(values = c("#d95f02", "#1b9e77")) +
+    scale_fill_manual(values = c("white", "#1b9e77")) +
+    geom_text(data = test, aes(label = rad_pred), size = 12) +
+    geom_text(data = spirals_df, aes(label = class, colour = class), alpha = 0.7) +
+    coord_fixed() +
+    theme_bw() +
+    theme(legend.position = 'none') +
+    ggtitle('Radial kernel')
+```
+
+
+
+```{r kernel_definition}
+
+# Define a function of two vector variables 
+# (both two dimensional) as the sum of various products of terms. 
+k <- function(u, v) {
+    u[1] * v[1] + 
+    u[2] * v[2] +
+    u[1] * u[1] * v[1] * v[1] + 
+    u[2] * u[2] * v[2] * v[2] +
+    u[1] * u[2] * v[1] * v[2]
+}
+# Define a function of a single vector variable
+# that returns a vector containing the original entries plus all products of entries. 
+phi <- function(x) {
+    x <- as.numeric(x)
+    c(x, x*x, combn(x, 2, FUN = prod))
+}
+```
+
+```{r kernal_confirmation}
+u <- c(1, 2)
+v <- c(3, 4)
+k(u, v)
+u*u
+combn(c(1, 4, 5, 6), 2, FUN = prod)
+phi(u)
+phi(v)
+# phi(u) . phi(v) agrees with k(u, v)
+# phi is the certificate that shows k is in fact a kernal
+as.numeric(phi(u) %*% phi(v))
+```
+
+Most kernel methods use the function `k(,)` directly and only use properties of `k(,)` guaranteed by the matching `phi()` to ensure method correctness. The `k(,)` function is usually quicker to compute than the notional function `phi()`.
+
+A simple example of this is what we’ll call the dot-product similarity of documents. The dot-product document similarity is defined as the dot product of two vectors where each vector is derived from a document by building a huge vector of indicators, one for each possible feature.
+
+For instance, if the features you’re considering are word pairs, then for every pair of words in a given dictionary, the document gets a feature of 1 if the pair occurs as a consecutive utterance in the document and 0 if not. This method is the phi(), but in practice we never use the `phi()` procedure.
+
+Instead, when comparing two documents, each consecutive pair of words in one document is generated and a bit of score is added if this pair is both in the dictionary and found consecutively in the other document. For moderate-sized documents and large dictionaries, this direct `k(,)` implementation is vastly more efficient than the `phi()` implementation.
+
+
+## Another Example
+
+Begin by generating observations that belong to two classes
+
+```{r svm_simulation, fig.height=8}
+set.seed(1)
+# 20x2
+x <- matrix(rnorm(20 * 2), ncol = 2)
+# x[y==1,]+1
+# -1 10 times, 1 10 times
+y = c(rep(-1, 10), rep(1, 10))
+# create data frame
+d <- tibble(
+    x1 = x[,1],
+    x2 = x[,2],
+    y = factor(y)
+)
+
+d %>% 
+    ggplot(aes(x1, x2, colour=y, shape=y)) +
+    geom_point() +
+    scale_x_continuous(limits=c(-3, 3)) +
+    scale_y_continuous(limits=c(-3, 3))
+
+# add some definition
+d <- d %>% 
+    mutate(
+        x1 = ifelse(y==1, x1+1, x1),
+        x2 = ifelse(y==1, x2+1, x2)
+    )
+
+d %>% 
+    ggplot(aes(x1, x2, colour=y, shape=y)) +
+    geom_point()
+
+```
+
+
+Fit the support vector classifier
+
+```{r svm_narrow_model}
+svm_fit <- svm(
+    y ~ .,
+    data = d,
+    # find a linear boundary
+    kernel = 'linear',
+    # the all important cost parameter.
+    # in the e1071 implementation the larger the cost the narrower the margin
+    cost = 10,
+    # dont scale the input data
+    scale = FALSE
+)
+
+plot(svm_fit, d)
+```
+
+Note that the two arguments to the `plot.svm()` function are the output of the call to `svm()`, as well as the data used in the call to `svm()`. The region of feature space that will be assigned to the −1 class is shown in yellow, and the region that will be assigned to the +1 class is shown in red.
+
+The decision boundary between the two classes is linear (because we used the argument `kernel="linear"`), though due to the way in which the plotting function is implemented in this library the decision boundary looks somewhat jagged in the plot.
+
+We see that in this case only one observation is misclassified
+
+The support vectors are plotted as crosses
+
+```{r svm_narrow_support_vectors}
+svm_fit$index
+d <- d %>% 
+    mutate(is_svm = rep(FALSE, nrow(d)))
+
+
+d[svm_fit$index, c('is_svm')] <- TRUE
+
+d %>% 
+    ggplot(aes(x1, x2, shape=is_svm, colour=y)) +
+    geom_point(size = 2)
+
+```
+
+```{r svm_narrow_summary}
+summary(svm_fit)
+```
+
+Use a smaller value of `C`
+
+```{r svn_model_wide}
+d$is_svm = NULL
+svm_fit <- svm(
+    y ~ .,
+    data = d,
+    kernel = 'linear',
+    # this will fit a much wider margin
+    # the budget is used more slowly
+    cost = 0.1,
+    scale = FALSE
+)
+
+plot(svm_fit, d)
+```
+
+
+```{r svm_wide_summary}
+summary(svm_fit)
+```
+
+```{r svm_tune}
+set.seed(1)
+svm_tune <- tune(
+    svm,
+    y ~ .,
+    data = d,
+    kernel = 'linear',
+    # the range of values taken by the cost parameter
+    # wide -> narrow
+    ranges = list(
+        cost = c(0.001, 0.01, 0.1, 1, 5, 10, 100)
+    )
+)
+
+```
+
+
+
+```{r svm_tune_summary}
+summary(svm_tune)
+```
+
+```{r svm_best_model}
+svm_fit <- svm_tune$best.model
+summary(svm_fit)
+```
+
+
+```{r generate_test_data}
+x_test <- matrix(rnorm(20*2), ncol = 2)
+df_test <- tibble(
+    x1 = x_test[,1],
+    x2 = x_test[,2],
+    y = sample(c(-1, 1), 20, rep = TRUE)
+)
+
+df_test <- df_test %>% 
+    mutate(
+        x1 = ifelse(y==1, x1+1, x1),
+        x2 = ifelse(y==1, x2+1, x2)
+    )
+
+
+```
+
+
+```{r test_predictions}
+df_test <- modelr::add_predictions(df_test, svm_fit)
+with(df_test, table(truth=y, predicted=pred))
+```
+
+Not bad
+
+
+```{r another_prediction}
+svm_fit <- svm(
+    y ~ .,
+    data = d,
+    kernal = 'linear',
+    cost = 0.01,
+    scale = FALSE
+)
+df_test <- modelr::add_predictions(df_test, svm_fit)
+with(df_test, table(truth=y, predicted=pred))
+```
+
+
+
+```{r make_classes_separable}
+d <- d %>% 
+    mutate(
+        x1 = ifelse(y == 1, x1 + 0.5, x1),
+        x2 = ifelse(y == 1, x2 + 0.5, x2)
+    )
+
+d %>% 
+    ggplot(aes(x1, x2, colour=y)) +
+    geom_point()
+```
+
+
+```{r fit_model_on_separable_classes}
+svm_fit <- svm(
+    y ~ .,
+    data = d,
+    kernel = 'linear',
+    # we will need a very narrow margin
+    cost = 1e5
+)
+summary(svm_fit)
+plot(svm_fit, d)
+```
+
+No training errors were made and only three support vectors were used. However, we can see from the figure that the margin is very narrow (because the observations that are not support vectors, indicated as circles, are very close to the decision boundary).
+
+It seems likely that this model will perform poorly on test data. We now try a smaller value of cost:
+
+```{r separable_classes_with_errors}
+svm_fit <- svm(
+    y ~ .,
+    data = d,
+    kernel = 'linear',
+    cost = 1
+)
+summary(svm_fit)
+plot(svm_fit, d)
+
+```
+
+
+## Support Vector Machine
+
+
+```{r generate_data_non_linear_boundary}
+set.seed(1)
+x <- matrix(rnorm(200*2), ncol = 2)
+dat <- tibble(
+    r = 1:200,
+    x1 = x[,1],
+    x2 = x[,2],
+    y = as.factor(c(rep(1, 150), rep(2, 50)))
+)
+dat <- dat %>% 
+    mutate(
+        x1 = case_when(
+            r <= 100 ~ x1 + 2,
+            between(r, 101, 150) ~ x1 - 2,
+            TRUE ~ x1
+        ),
+        x2 = case_when(
+            r <= 100 ~ x2 + 2,
+            between(r, 101, 150) ~ x2 - 2,
+            TRUE ~ x2
+        )
+    )
+dat
+rm(x)
+```
+
+```{r plot_non_linear_data}
+dat %>% 
+    ggplot(aes(x1, x2, colour = y)) +
+    geom_point(size = 2)
+
+```
+
+
+```{r non_linear_train_test_split}
+train <- sample(200, 100)
+df_train <- dat %>% 
+    slice(train) %>% 
+    select(-r)
+
+df_test <- dat %>% 
+    slice(-train) %>% 
+    select(-r)
+rm(train)
+```
+
+
+```{r fit_non_linear_model}
+svm_fit <- svm(
+    y ~ x1 + x2,
+    data = df_train,
+    kernel = 'radial',
+    # parameter for radial (exponential) function
+    gamma = 1,
+    cost = 1
+)
+plot(svm_fit, df_train)
+```
+
+
+```{r summarise_non_linear_model}
+summary(svm_fit)
+```
+
+Increase cost (and narrow the margin) to reduce number of training errors
+
+```{r non_linear_svm_narrow}
+svm_fit <- svm(
+    y ~ x1 + x2,
+    data = df_train,
+    kernel = 'radial',
+    gamma = 1,
+    cost = 1e5
+)
+plot(svm_fit, df_train)
+```
+
+Now the decision boundary is too irregular - we are overfitting
+
+```{r tune_non_linear_svm, paged.print=FALSE}
+set.seed(1)
+svm_tune <- tune(
+    svm,
+    y ~ x1 + x2,
+    data = df_train,
+    kernel = 'radial',
+    ranges = list(
+        cost = c(0.1, 1, 10, 100, 1000),
+        gamma = c(0.5, 1, 2, 3, 4)
+    )
+)
+summary(svm_tune)
+```
+
+```{r fit_tuned_non_linear_model}
+svm_fit <- svm_tune$best.model
+# or
+svm_fit <- svm(
+    y ~ x1 + x2,
+    data = df_train,
+    kernel = 'radial',
+    gamma = 0.5,
+    cost = 1,
+    # record the predicted probabilities
+    decision_values = TRUE
+)
+summary(svm_fit)
+svm_pred <- predict(svm_fit, df_test, decision.values = TRUE)
+# probabilities behind labels
+fitted <- as.numeric(attr(svm_pred, 'decision.values'))
+fitted <- as.numeric(attr(svm_pred, 'decision.values'))
+fitted
+
+df_test <- df_test %>% 
+    mutate(
+        pred_y = as.factor(svm_pred),
+        pred = fitted
+    )
+cm <- table(truth = df_test$y, predicted = df_test$pred_y)
+cm
+sum(diag(cm)) / sum(cm)
+```
+
+About 12% of test observations are misclassified by the SVM
+
+## ROC Curve
+
+```{r}
+df_test %>% 
+    yardstick::roc_curve(
+        y,
+        pred
+    ) %>% 
+    ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+    geom_line(size = 1.5, color = "midnightblue") +
+    geom_abline(
+        lty = 2,
+        alpha = 0.5,
+        color = "gray50",
+        size = 1.2
+    )
+```
+
+
+## Gene Expression Data
+
+
+```{r khan_dataset}
+library(ISLR)
+names(Khan)
+map_if(Khan, is.matrix, dim, .else=length)
+```
+
+This data set consists of expression measurements for 2,308 genes.
+
+The training and test sets consist of 63 and 20 observations respectively.
+
+```{r}
+table(Khan$ytrain)
+table(Khan$ytest)
+
+```
+
+
+```{r gene_expression_train_test}
+df_train <- as_tibble(Khan$xtrain) %>% 
+    mutate(y = as.factor(Khan$ytrain))
+df_train %>% 
+    count(y)
+
+df_test <- as_tibble(Khan$xtest) %>% 
+    mutate(y = as.factor(Khan$ytest))
+
+```
+
+
+```{r gene_expression_model}
+svm_fit <- svm(
+    y ~ .,
+    data = df_train,
+    kernel = 'linear',
+    cost = 10
+)
+summary(svm_fit)
+```
+```{r results_on_training}
+table(svm_fit$fitted, df_train$y)
+```
+
+
+We see that there are no training errors. In fact, this is not surprising, because the large number of variables relative to the number of observations implies that it is easy to find hyperplanes that fully separate the classes.
+
+We are most interested not in the support vector classifier’s performance on the training observations, but rather its performance on the test observations.
+
+
+```{r results_on_test}
+df_test$pred <- predict(svm_fit, newdata = df_test)
+table(df_test$pred, df_test$y)
+
+```
+
+We see that using cost=10 yields two test set errors on this data.
