@@ -1,0 +1,124 @@
+---
+title: "ARIMA Models with Canadian Lynx data"
+output:
+    html_document:
+        fig_width: 7
+        fig_height: 5
+editor_options: 
+    chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    dpi = 100,
+    fig.width = 8,
+    fig.height = 5,
+    message = F,
+    error = F,
+    warning = F,
+    cache = F
+)
+library(tidyverse)
+library(lubridate)
+
+```
+
+
+$$
+X_t = \sum_{j=0}^q {\beta_j \epsilon_{t - j}} + \sum_{i=1}^p {\alpha_i X_{t-i} + \epsilon_t}
+$$
+
+The fundamental difference is that a set of random components $\epsilon_{t-j}$ influences the current value of a MA process, whereas only the current random effect $\epsilon_t$ affects an AR process. Both kinds of effects are at work in an ARMA processes. Ecological models of population dynamics are typically AR models.
+
+$$
+N_t = \lambda N_{t-1}
+$$
+
+
+(the discrete-time version of exponential growth $(\lambda > 1)$ or decay $(\lambda < 1)$ looks just like an first order AR process with the random effects missing.
+
+This is somewhat misleading, however, since time series are supposed to be stationary, which would imply a long-term average value of $\lambda = 1$. But, in the absence of density dependence (as here), this is impossible. The $\alpha$ of the AR model is not the $\lambda$ of the population model.
+
+The Canadian lynx data are used as an example of arima in time series modelling
+
+```{r lynx_data}
+lynx <- read_tsv(
+    '../data/lynx.tsv',
+    col_types = cols(
+        Lynx = col_integer()
+    )
+) %>% mutate(index = row_number())
+
+
+```
+
+
+```{r lynx_ts}
+lynx_ts <- lynx %>% 
+    pull(Lynx) %>% 
+    ts()
+
+forecast::tsdisplay(
+    lynx_ts
+)
+```
+
+
+The population is very clearly cyclic, with a period of 10 years. The dynamics appear to be driven by strong, negative density dependence (a partial autocorrelation of –0.588) at lag 2. There are other significant partials at lag 1 and lag 8 (positive) and lag 4 (negative)
+
+
+
+The order vector specifies the non-seasonal part of the ARIMA model: the three components `(p, d, q)` are the AR order, the degree of differencing, and the MA order. We start by investigating the effects of AR order with no differencing and no moving average terms, comparing models on the basis of the AIC:
+
+
+```{r lynx_models_ar}
+model10 <- arima(lynx_ts,order=c(1,0,0))
+model20 <- arima(lynx_ts,order=c(2,0,0))
+model30 <- arima(lynx_ts,order=c(3,0,0))
+model40 <- arima(lynx_ts,order=c(4,0,0))
+model50 <- arima(lynx_ts,order=c(5,0,0))
+model60 <- arima(lynx_ts,order=c(6,0,0))
+AIC(model10,model20,model30,model40,model50,model60)
+
+```
+
+On the basis of AR alone it appears that order 4 is best. What about MA?
+
+```{r lynx_models_ma}
+model01 <- arima(lynx_ts,order=c(0,0,1))
+model02 <- arima(lynx_ts,order=c(0,0,2))
+model03 <- arima(lynx_ts,order=c(0,0,3))
+model04 <- arima(lynx_ts,order=c(0,0,4))
+model05 <- arima(lynx_ts,order=c(0,0,5))
+model06 <- arima(lynx_ts,order=c(0,0,6))
+AIC(model01,model02,model03,model04,model05,model06)
+
+```
+
+
+The AIC values are generally higher than given by the AR models. Perhaps there is a combination of AR and MA terms that is better than either on their own?
+
+```{r lynx_models_ar_ma}
+model40 <- arima(lynx_ts,order=c(4,0,0))
+model41 <- arima(lynx_ts,order=c(4,0,1))
+model42 <- arima(lynx_ts,order=c(4,0,2))
+model43 <- arima(lynx_ts,order=c(4,0,3))
+AIC(model40,model41,model42,model43)
+```
+
+Evidently there is no need for a moving average term (model40 is best). What about the degree of differencing?
+
+
+```{r lynx_models_differencing}
+model400 <- arima(lynx_ts,order=c(4,0,0))
+model401 <- arima(lynx_ts,order=c(4,1,0))
+model402 <- arima(lynx_ts,order=c(4,2,0))
+model403 <- arima(lynx_ts,order=c(4,3,0))
+AIC(model400,model401,model402,model403)
+
+```
+
+The model with no differencing performs best. The lowest AIC is `1874.222`, which suggests that a model with an AR lag of 4, no differencing and no moving average terms is best. 
+
+This implies that a rather complex ecological model is required which takes account of both the significant partial correlations at lags of 2 and 4 years, and not just the 2-year lag (i.e. plant–herbivore effects may be necessary to explain the dynamics, in addition to predator–prey effects).
