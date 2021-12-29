@@ -1,0 +1,201 @@
+---
+title: "GGplot2 Workshop part 2"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(gganimate)
+library(ggrepel)
+library(ggforce)
+```
+
+
+## Plot Composition
+
+We use patchwork
+
+```{r patchwork_1}
+p1<-ggplot(msleep) +
+    geom_boxplot(aes(x=sleep_total, y=vore, fill=vore))
+p2<-ggplot(msleep) +
+    geom_bar(aes(y=vore, fill=vore))
+p3<-ggplot(msleep) +
+    geom_point(aes(x=bodywt, y=sleep_total, colour=vore)) +
+    scale_x_log10()
+
+# | combines. / is the stack operator
+p_all <- (p1 | p2)/p3
+p_all + plot_layout(guides='collect')
+p_all & theme(
+    legend.position='none'
+)
+p_all + plot_annotation(
+    title='Mammalian sleep patterns',
+    tag_levels = 'A'
+)
+```
+
+We can customize how much space each plot takes
+
+```{r patchwork_space}
+p<-ggplot(mtcars) +
+    geom_point(aes(x=disp, y=mpg))
+plots<-p + p + p
+# relative sizes
+plots + plot_layout(widths=c(1,2,1))
+# first plot gets 5 cm, the other two split the remaining space between them
+plots + plot_layout(width=unit(c(6, 1, 1), c('cm', 'null', 'null')))
+```
+
+More on the `&` operator
+
+```{r patchwork_composition}
+p1 <- ggplot(mtcars[mtcars$gear == 3,]) +
+    geom_point(aes(x=disp, y=mpg))
+p2 <- ggplot(mtcars[mtcars$gear == 4,]) +
+    geom_point(aes(x=disp, y=mpg))
+plots <- p1 + p2
+# note that the axis values are not aligned
+plots
+plots & scale_y_continuous(limits=c(10,40), name = NULL)
+```
+
+
+Layouts can be specified by design
+
+```{r patchwork_layouts}
+p1<-ggplot(mtcars) +
+    geom_point(aes(x=disp, y=mpg))
+p2<-ggplot(mtcars) +
+    geom_bar(aes(x=factor(gear)))
+p3<-ggplot(mtcars) +
+    geom_boxplot(aes(x=factor(gear), y=mpg))
+# 3x3 grid (plot, plot, blank)(blank, plot, plot)(plot, blank, blank)
+layout<-'AA#\n#BB\nC##'
+plots <- p1 + p2 + p3
+plots + plot_layout(design=layout)
+```
+
+## Animation
+
+Continuous transitions
+
+```{r continouos_transition}
+# start with something static
+p<-ggplot(economics) +
+    geom_line(aes(x=date, y=unemploy)) +
+    transition_reveal(along=date)
+# now add a transition that reveals the geom (line) along the date axis
+animate(p, renderer = av_renderer())
+
+```
+
+Discrete transitions
+
+```{r discrete_transition}
+# place holder. uses glue package. every thing in curly brackets is evaluated as R code
+# closest_state will be the year in this case
+# i.e the name of the state that is closest to the current frame
+p<-ggplot(mpg) +
+    geom_bar(aes(x=factor(cyl))) +
+    labs(title='Number of cars in {closest_state} by number of cylinders')
+
+# enter and exit because new graphic data comes in (5 cylinders in this case)
+p + transition_states(states=year) +
+    enter_grow() +
+    exit_fade()
+
+```
+
+The animation below will animate points showing cars with different cylinders
+
+```{r car_cylinders}
+p<-ggplot(mpg) +
+    geom_point(aes(x=displ, y=hwy)) +
+    ggtitle("Cars with {closest_state} cylinders")
+# it looks like the cars are changing cylinders
+p + transition_states(factor(cyl))
+
+```
+
+use the group aesthetic to match observations between states
+
+
+```{r car_cylinders_with_groups}
+# give each row its own unique group
+row_ids = seq_len(nrow(mpg))
+p<-ggplot(mpg) +
+    geom_point(aes(x=displ, y=hwy, group=row_ids)) +
+    ggtitle("Cars with {closest_state} cylinders")
+# it looks like the cars are changing cylinders
+p + transition_states(factor(cyl))
+# if you say colour=factor(cyl) you'll get the same effect
+```
+
+
+Easing refers to the speed at which values change during an animation
+
+```{r easing}
+# cty and hwy move from being columns to rows
+mpg2<-tidyr::pivot_longer(mpg, c(cty, hwy))
+p<-ggplot(mpg2) +
+    geom_point(aes(x=displ, y=value)) +
+    ggtitle("{if (closest_state == 'city') 'Efficiency in city' else 'Efficiency on highway'}")
+# from constant speed from y aesthetic
+p + transition_states(name) +
+    ease_aes(y='cubic-in-out')
+```
+
+View the documentation by typing `?animate`
+
+
+## Annotations
+
+Overplotting
+
+```{r overplotting_example}
+ggplot(mtcars, aes(x=disp, y=mpg)) +
+    geom_point() +
+    geom_text(aes(label=row.names(mtcars)))
+```
+
+Now with `ggrepel`
+
+```{r ggrepel_example, fig.width=10, fig.height=8}
+labels = row.names(mtcars)
+ggplot(mtcars, aes(x=disp, y=mpg)) +
+    geom_point(size = 2, alpha = .8) +
+    geom_text_repel(aes(label = labels), color = 'steelblue')
+
+```
+
+highlighting with `ggforce`
+
+```{r ggforce_highlighting}
+p<-ggplot(mtcars, aes(x=disp, y=mpg)) +
+    geom_point() +
+    coord_cartesian(xlim=c(0, 500), ylim=c(0,40))
+p + geom_mark_ellipse(aes(
+        filter=gear==4,
+        label='4 gear cars',
+        description='Cars with fewer gears tend to both have higher yield and lower displacement'
+    ))
+
+p + geom_mark_hull(aes(fill=factor(gear), label=gear))
+```
+
+
+Hiding guides
+
+```{r hiding_guides}
+ggplot(mtcars, aes(x=disp, y=mpg, colour=factor(gear))) +
+    geom_point() +
+    guides(colour=guide_none())
+```
+
+
+

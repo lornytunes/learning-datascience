@@ -1,0 +1,379 @@
+---
+title: "GGPLOT2 Workshop Part 1"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ISLR)
+```
+
+## Introduction
+
+Here we look at the basic ggplot2 using the faithful dataset. The x axis is how long the eruption lasts and the y axis is the length of the wait.
+
+- Data
+- Mapping
+- Statistics
+- Scales
+- Geometries
+- Facets
+- Coordinates
+- Theme
+
+```{r basic_scatterplot}
+# basic scatterplot - data is global. colour is an expression not a string
+# colour='steelblue'
+ggplot(data=faithful, mapping=aes(x=eruptions, y=waiting, colour=eruptions<3)) +
+    geom_point()
+# data can be given per layer. note that colour is outside of aes
+ggplot() +
+    geom_point(mapping=aes(x=eruptions, y=waiting), data=faithful, colour='steelblue')
+
+```
+
+There are other geometries
+
+```{r basic_histogram}
+ggplot(faithful) +
+    geom_histogram(aes(x=eruptions), binwidth=0.2)
+```
+
+```{r basic_density_plot}
+ggplot(faithful, aes(x=eruptions, y=waiting)) +
+    geom_density_2d() +
+    geom_point()
+```
+
+### Exercises
+
+Modify the code below to make the points larger squares and slightly transparent.
+See `?geom_point` for more information on the point layer.
+
+```{r faithful_point_plot}
+ggplot(faithful) +
+    geom_point(aes(x=eruptions, y=waiting), size=3, shape='square', alpha=0.5)
+
+```
+
+```{r point_shapes_and_sizes}
+df2<-data.frame(x=1:5, y=1:25, z=1:25)
+s <- ggplot(df2, aes(x = x, y = y))
+s + geom_point()
+
+s + geom_point(aes(shape = z), size = 4) + scale_shape_identity()
+# While all symbols have a foreground colour, symbols 19-25 also take a
+# background colour (fill)
+s + geom_point(aes(shape = z), size = 4, colour = "Red") +
+    scale_shape_identity()
+s + geom_point(aes(shape = z), size = 4, colour = "Red", fill = "Black") +
+    scale_shape_identity()
+
+```
+
+
+```{r faithful_point_plot_2}
+ggplot(faithful) +
+    geom_point(aes(x=eruptions, y=waiting), alpha=0.5, shape=15, size=2, colour='darkblue')
+```
+
+Color the two distributions in the histogram with different colours
+
+```{r faithful_histogram_1}
+ggplot(faithful) +
+    geom_histogram(
+        aes(x=eruptions,fill=eruptions<3),
+        colour='black',
+        binwidth=0.1
+    )
+```
+
+```{r faithful_histogram_2}
+# try position=identity and alpha=0.2
+ggplot(faithful) +
+    geom_histogram(
+        aes(x=eruptions, fill=waiting<60),
+        color='lightgrey',
+        position='identity',
+        alpha=0.5
+    )
+
+```
+
+
+Separate the two distributions with a line
+
+```{r faithful_two_distributions}
+ggplot(faithful) +
+    geom_point(aes(x=eruptions, y=waiting)) +
+    geom_abline(slope=-40, intercept=190)
+```
+
+
+## Statistics
+
+Statistics represent a transformation of the data prior to plotting.
+
+`geom_bar` uses `stat_count` by default
+
+```{r geom_bar}
+ggplot(mpg) +
+    geom_bar(aes(x=class))
+```
+
+```{r geom_col}
+mpg %>% 
+    count(class, name = 'count') %>%
+    ggplot(aes(x = class, y = count)) +
+    geom_col()
+```
+
+
+```{r stat_smoothers}
+Auto %>% 
+    ggplot(aes(x = mpg, y = horsepower)) +
+    geom_point(alpha = 0.5) +
+    stat_smooth(method = 'lm', se = FALSE) +
+    stat_smooth(method = 'glm', formula = y ~ poly(x, 2), se = FALSE, color='orange') +
+    stat_smooth(method = 'glm', formula = y ~ poly(x, 3), se = FALSE, color='red')
+
+```
+
+However if we have pre-computed data
+
+```{r geom_bar_2}
+# or just library(dplyr)
+mpg_counted <- mpg %>% dplyr::count(class, name='count')
+# notice the mapping
+ggplot(mpg_counted) +
+    geom_bar(aes(x=class, y=count), stat='identity')
+```
+
+```{r geom_col_2}
+# or better
+ggplot(mpg_counted) +
+    geom_col(aes(x=class, y=count))
+```
+
+Use `after_stat()` to modify mapping from stats - i.e modify the values that
+come out of the stats.
+
+```{r after_stat}
+ggplot(mpg) + geom_bar(aes(
+    x=class,
+    y=after_stat(100 * count / sum(count))
+))
+```
+
+Some stats provide multiple calculate values 
+
+```{r geom_density_1}
+ggplot(mpg) +
+    geom_density(aes(x=hwy))
+```
+
+```{r geom_density_2}
+ggplot(mpg) +
+    geom_density(aes(x=hwy, y=after_stat(scaled)))
+```
+
+You can add stat layers instead of geoms
+
+```{r stat_count}
+ggplot(mpg) +
+    stat_count(aes(x=class))
+```
+
+```{r stat_summary}
+# geom for stat_summary is point range
+ggplot(mpg, aes(x = class, y = hwy)) +
+    geom_jitter(width=0.2) +
+    stat_summary(fun=mean, geom='point', colour='red', size=2)
+```
+
+
+## Scales
+
+Naming scheme is `scale_<aesthetic>_<type>`. e.g `scale_x_continuous`
+
+
+```{r scale_colour_brewer}
+# type of column - continuous, factor, date
+# use scale with colours that don't stand out
+# qual means use a qualititive colour scale
+ggplot(mpg) +
+    geom_point(aes(x=displ, y=hwy, color=class)) +
+    scale_colour_brewer(type='qual', name='Class of Vehicle')
+# type palette='Set1'
+```
+
+Can control x and y
+
+```{r scale_continuous}
+diff(log10(c(10, 20, 30, 40)))
+ggplot(mpg) +
+    geom_point(aes(x=displ, y=hwy)) +
+    scale_x_continuous(breaks=c(3, 5, 6)) +
+    scale_y_continuous(trans='log10')
+# short cut
+# scale_y_log10()
+```
+
+
+Take a look at color brewer palettes
+
+```{r inspect_colour_brewer}
+RColorBrewer::display.brewer.all()
+```
+
+Bubble chart
+
+```{r bubble_chart}
+summary(as.factor(mpg$cyl))
+# there is no 7
+cylinders = as.integer(levels(as.factor(mpg$cyl)))
+p<-ggplot(mpg) +
+    geom_point(aes(x=displ, y=hwy, colour=class, size=cyl)) +
+    scale_colour_brewer(type='qual')
+p
+p + scale_size(breaks=cylinders)
+p + scale_radius(breaks=cylinders)
+p + scale_size_area(breaks=cylinders)
+```
+
+```{r colour_and_size_legend}
+p<-ggplot(mpg) +
+    geom_point(aes(x=displ, y=hwy, colour=cty, size=cty))
+p + scale_colour_continuous()
+# merge colour and size
+p + guides(colour='legend')
+```
+
+## Facets
+
+Used to avoid overplotting. Facet grids are a way of doing pivot plots.
+
+```{r facet_wrap_1}
+p<-ggplot(mpg) +
+    geom_point(aes(x=displ, y=hwy))
+p+facet_wrap(~class)
+```
+
+```{r facet_grid_1}
+p+facet_grid(year~drv)
+```
+
+
+Changing scales
+
+```{r facet_scales}
+p<-ggplot(mpg) +
+    geom_point(aes(x=displ, y=hwy))
+p + facet_wrap(~drv)
+p + facet_wrap(~drv, scales='free')
+p + facet_wrap(~drv, scales='free_y')
+p + facet_wrap(~drv+year)
+```
+
+Changing the space occupied by each panel
+
+```{r facet_panel_spacing}
+p<-ggplot(mpg) +
+    geom_bar(aes(y=manufacturer))
+# all share the same scale. space wasted showing no data
+p + facet_grid(class~.)
+p + facet_grid(class~., space='free_y', scales='free_y')
+```
+
+
+## Coordinates
+
+How should x and y be interpreted?
+
+```{r polar_coordinates}
+p<-ggplot(mpg) +
+    geom_bar(aes(x=class))
+# x->angle, y->radius
+p + coord_polar()
+# change what gets mapped to angle
+p + coord_polar(theta='y') + expand_limits(y=70)
+```
+
+
+### Zooming
+
+```{r zooming}
+p<-ggplot(mpg) +
+    geom_bar(aes(x=class))
+# this removes bars
+p + scale_y_continuous(limits=c(0, 40))
+# this is better
+p + coord_cartesian(ylim=c(0, 40))
+```
+
+Just as you can set limits in coordinates as well as scales, so to can you do transformations in coordinates.
+
+Scale transforms the input values prior to calculating the breaks
+
+```{r scale_transforming}
+p<-ggplot(mpg) +
+    geom_point(aes(x=hwy, y=displ))
+p
+p + scale_y_continuous(trans='log10')
+p + scale_y_continuous(trans='log')
+# breaks have already been calculated. we are just stretching the fabric
+p + scale_y_continuous(labels=c(1:7), breaks=c(1:7)) + coord_trans(y='log')
+```
+
+
+## Maps
+
+```{r world_map}
+world <- sf::st_as_sf(maps::map('world', plot=FALSE, fill=TRUE))
+world <- sf::st_wrap_dateline(world, options=c("WRAPDATELINE=YES", "DATELINEOFFSET=180"), quiet=TRUE)
+
+p<-ggplot(world) +
+    geom_sf()
+p + coord_sf(crs='+proj=moll')
+```
+
+## Themes
+
+Not related to data
+
+```{r custom_theme_initial_plot}
+p<-ggplot(mpg) +
+    geom_bar(aes(y=class)) +
+    facet_wrap(~year) +
+    labs(
+        title='Number of car models per class',
+        caption='source: http//fueleconomy.gov',
+        x=NULL,
+        y=NULL
+    )
+
+p
+```
+
+```{r minimal_theme}
+p + scale_x_continuous(expand = c(0, NA))
+
+p + theme_minimal()
+```
+
+```{r custom_theme}
+new_theme = theme(
+    text = element_text('Avenir Next Condensed'),
+    strip.text = element_text(face='bold', hjust=0),
+    plot.caption = element_text(face='italic'),
+    panel.grid.major = element_line('white', size=0.5),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.ontop = TRUE
+)
+
+p + theme_minimal() + new_theme
+```
+
+
