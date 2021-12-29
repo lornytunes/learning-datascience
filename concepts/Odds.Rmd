@@ -1,6 +1,6 @@
 ---
 title: "Odds"
-output: github_document
+output: html_document
 ---
 
 ```{r setup, include=FALSE}
@@ -15,6 +15,7 @@ options(
     digits = 3
 )
 suppressMessages(library(tidyverse))
+source('../lib/logistic.R')
 ```
 
 
@@ -40,6 +41,24 @@ A probability is the ratio of something happening to everything that could happe
 
 Here the probability is `r 5/8`.
 
+To transform odds into a probability you compute
+
+$$
+p = \frac{o}{1+o}
+$$
+```{r odds_to_probability}
+odds2p(5/3)
+```
+To transform probabilities into odds you compute
+
+$$
+o = \frac{p}{1-p}
+$$
+```{r probabilty_to_odds}
+p2odds(0.625)
+```
+
+
 The ratio of the probabilty of winning to the probability of losing is
 
 $$
@@ -47,7 +66,7 @@ $$
 $$
 Which is `r (5/8) / (1 - (5/8))` i.e. the same as the odds. (notices how the 8's cancel out)
 
-![Odds as p/1-p](../images/odds_4.png)
+![Odds as $\frac{p}{1-p}$](../images/odds_4.png)
 
 So odds can be calculated from counts $\frac{5}{3}$ or from probabilities $\frac{p}{1-p}$
 
@@ -137,19 +156,25 @@ Those with the mutated gene are the row sums
 
 What we want to know is whether or not there is a relationship between the mutated gene and cancer.
 
-This can be answered by comparing the odds. If they have the mutated gene are the odds higher that they will get cancer.
+This can be answered by comparing the odds. If they have the mutated gene the odds higher that they will get cancer.
 
 The odds of having cancer given the mutated gene are
 
-```{r odds_ratio_compare}
+```{r odds_ratio_1}
 # first columm divided by the second column
 (c_odds <- cm[,1]/cm[,2])
 ```
+
+```{r odds_ratio_2}
+c(yes=23/117, no=6/210)
+```
+
+
 The odds are against getting cancer, but they differ depending on the mutated gene.
 
 This is typically expressed as a ratio
 
-```{r odds_ratio}
+```{r odds_ratio_3}
 (o_ratio <- c_odds[1] / c_odds[2])
 ```
 
