@@ -1,0 +1,463 @@
+---
+title: "Time Series Smoothing"
+output: html_document
+editor_options: 
+    chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    dpi = 100,
+    fig.width = 11,
+    fig.height = 6,
+    message = F,
+    error = F,
+    warning = F,
+    cache = F
+)
+options(digits=4)
+library(tidyverse)
+library(lubridate)
+
+date_rotation <- ggExtra::rotateTextX(angle = 45, vjust = 1, hjust = 1)
+
+```
+
+## Exponential Smoothing
+
+Start with an additive model with constant level `m` and no seasonality:
+
+$$
+X_t = m + W_t
+$$
+
+Where $W_t$ is the irregular component.
+
+To forcast $X_{n+1}$ given $x_n, x_{n-1},x_{n-2}\ldots$ we use **exponential smoothing**:
+
+$$
+\hat x_{n+1} = c_0 x_n + c_1 x_{n-1} + c_2 x_{n-2} + c_3 x_{n-3} \ldots
+$$
+
+Where the weights are
+
+$$
+c_i = \alpha(1-\alpha)^i,i = 0,1,2,\ldots
+$$
+
+Where &alpha; is a parameter to be estimated and the weights sum to 1. so:
+
+$$
+\hat x_{n+1} = \alpha x_n + \alpha(1-\alpha) x_{n-2} + \alpha(1-\alpha)^2 x_{n-2} + \alpha(1-\alpha)^3 x_{n-3}\ldots
+$$
+
+### Calculating weights
+
+Calculate the wieghts $c_i = \alpha(1-\alpha)^i$ for $i = 0, 1, 2, 3, 4$ when &alpha; is 0.5 and 0.8
+
+```{r calculating_weights}
+calc_weights <- function(a, n) {
+    map_dbl(0:n, function(i) a*(1 - a)^i)
+}
+
+tibble(
+    c = 0:4,
+    `0.5` = calc_weights(0.5, 4),
+    `0.8` = calc_weights(0.8, 4)
+)
+```
+
+The weight given to the current observation is $c_0$, which is equal to &alpha;.
+
+Thus more weight is given to the current observation when &alpha; = 0.8 than when &alpha; = 0.5.
+
+
+### Simulating exponential smoothing
+
+Smoothing can be rewritten like this:
+
+$$
+\hat x_{n+1} = \alpha x_n + (1-\alpha) \hat x_n
+$$
+
+Hence the 1-step ahead forecast of $X_{n+1}$ is a combination of $x_n$, (the observed value of $X_n$ and $\hat x_n$ (the 1-step ahead forecast of $X_n$)
+
+```{r simulating_exponential_forecasting}
+X <- c(19.4, 18.9, 18.9, 17.8)
+n <- length(X)
+Y <- numeric(n)
+alpha = 0.6
+# seed
+Y[1] <- X[1]
+for(i in 2:n) {
+    # observed value + one-step ahead forecast
+    Y[i] <- alpha * X[i-1] + (1-alpha) * Y[i-1]
+}
+tibble(
+    index = 1:n,
+    X = X,
+    Y = Y
+)
+```
+
+### Predict tomorrow's temperature
+
+```{r predicting_tomorrows_temperature}
+# later temperatures
+X <- c(18.9, 17.8, 19.4, NA)
+n <- length(X)
+Y <- numeric(n)
+alpha <- 0.6
+# the 1-step ahead is currently set to
+Y[1] <- 20.26312
+for (i in 2:n) {
+    Y[i] <- alpha * X[i-1] + (1 - alpha) * Y[i-1]
+}
+
+# 29:(29+n)
+
+tibble(
+    index = 29:(29+n-1),
+    X = X,
+    Y = Y
+)
+```
+
+## Example: Chemical Process Data
+
+Load the data
+
+
+```{r load_chemical_process_data}
+chemical = read_csv(
+    'data/chemical_process.csv',
+    col_types = cols(
+        index = col_integer(),
+        temperature = col_integer()
+    )
+)
+```
+
+
+
+Fit smoothing model
+
+```{r chemical_smoothing_model}
+# find the value of alpha that minimizes the sse
+chemical_fit <- forecast::ses(
+    chemical$temperature,
+    # want to optimize intial values as well as the alpha smoothing parameter
+    initial="optimal"
+)
+coef(chemical_fit$model)
+```
+
+Assessing the accuracy of the forecasts
+
+```{r chemical_smoothing_fitted_and_residuals}
+# add fitted and residuals
+chemical <- chemical %>% 
+    add_column(forecast = fitted(chemical_fit)) %>% 
+    mutate(resid = temperature - forecast)
+```
+
+
+
+```{r chemical_smoothing_accuracy}
+
+chemical %>% 
+    summarise(
+        SSE = sum(resid^2)
+    ) %>% 
+    # n-k = 100-1 since we are only estimating alpha
+    mutate(RMSE = sqrt(SSE/99))
+```
+
+
+The accuracy of the forecast for each measurement can be assessed by the difference between the observed value and the forecast.
+
+This difference is called the forecast error and is denoted $\epsilon_t$ . 
+
+The first value is zero because the initial value was chosen to be the temperature initially observed.
+
+A convenient way of summarizing the overall accuracy of the forecasts by a single number is to add up the squares of the forecast errors
+
+```{r plot_chemical_smoothing}
+chemical %>% 
+    pivot_longer(temperature:forecast, names_to = 'series', values_to = 'temperature') %>% 
+    ggplot(aes(index, temperature, colour = series)) +
+    geom_line()
+```
+
+
+
+## Holts exponential smoothing method
+
+This is an extension of simple exponential smoothing which is approproate for time series with a linear trend
+
+Start with an additive non-seasonal model with a *linear trend* component
+
+$$
+X_t = m + b t + W_t
+$$
+
+where b is the slope of the trend component $m_t = m + bt$. Now
+
+$$
+X_{t+1} = m + b(t+1) + W_{t+1} \\
+= (m + bt) + b + W_{t + 1} \\
+= m_t + b + W_{t + 1}
+$$
+
+So now the 1-step ahead foreacast for $X_t+1$ is obtained using simple exponential smoothing is an estimate of $m_t$, the level at time t, so that
+
+$$
+\hat x_{t + 1} = \hat m_t
+$$
+
+Since $W_t+1$ has mean zeros, the expected value of $X_{t+1}$ is $m_{t} + b$. Hence a better forecast is
+
+$$
+\hat x_{t+1} = \hat m_t + \hat b
+$$
+
+where $\hat b$ is an estimate of the slope. In the example above it would mean adding a bit on in line with recent increase in temperatures.
+
+Holt’s exponential smoothing method provides a way of estimating both the level $m_t$ and the slope `b` at each time point. This is achieved by a smoothing method very similar to that used in simple exponential smoothing.
+
+The main difference between Holt’s method and simple exponential smoothing is that the smoothing is now controlled by two parameters - one parameter &alpha; for the estimate of the level $m_t$ at the current time point, and one parameter &beta; for the estimate of the slope b.
+
+The values of both parameters, &alpha; and &beta;, lie between 0 and 1. As with simple exponential smoothing, values of the parameters close to 0 mean that little weight is placed on the most recent observations.
+
+On the other hand, values close to 1 mean that much weight is placed on the most recent observations.
+
+## Example: Central England Temperatures, 1901-2004
+
+
+```{r load_cet}
+temp_df <- read_csv(
+    'data/central_england_temperatures_1659_2004.csv',
+    col_types = cols(
+        year = col_integer(),
+        temperature = col_double()
+    )
+)
+```
+
+
+```{r cet_etl}
+temp_df <- temp_df %>% 
+    # we just want 1901-2004
+    filter(year > 1900) %>% 
+    mutate(
+        index = make_date(year)
+    ) %>%
+    select(index, temperature)
+```
+
+
+```{r cet_summarise}
+temp_df %>% 
+    summarise(min = min(index), max = max(index))
+```
+
+
+```{r cet_plot, fig.width = 12}
+temp_df %>% 
+    ggplot(aes(index, temperature)) +
+    geom_line() +
+    scale_x_date(date_breaks = '5 years', date_labels = '%Y') +
+    labs(x = NULL) +
+    ggtitle('Annual average Central England temperatures (C), 1901-2004')
+```
+
+The data are annual, so the time series is not seasonal, and the width of the irregular fluctuations does not appear to vary with the level. 
+
+Temperatures appear higher towards the end of the series than at the beginning, so it is not unreasonable to assume that there might be an increasing trend.
+
+```{r cet_ses_model}
+model_ses <- forecast::ses(temp_df$temperature, initial = 'optimal')
+coef(model_ses$model)
+```
+
+```{r cet_holt_model}
+model_holt <- forecast::holt(temp_df$temperature, initial = 'optimal')
+coef(model_holt$model)
+```
+
+
+
+```{r cet_models_fitted_plus_residuals}
+temp_df <- temp_df %>% 
+    mutate(
+        forecast_ses = fitted(model_ses),
+        resid_ses = resid(model_ses),
+        forecast_holt = fitted(model_holt),
+        resid_holt = resid(model_holt)
+    )
+```
+
+```{r cet_2004}
+temp_df %>% 
+    slice(nrow(temp_df))
+```
+
+
+Compute SSE for each model
+
+```{r cet_model_accuracy}
+temp_df %>% 
+    summarise_at(vars(starts_with('resid')), ~sum(.^2))
+
+```
+
+Plot each model
+
+```{r cet_model_plot, fig.width = 12}
+temp_df %>% 
+    select(index, temperature, starts_with('forecast')) %>% 
+    pivot_longer(temperature:forecast_holt, names_to = 'series', values_to = 'temperature') %>% 
+    ggplot(aes(index, temperature, colour = series)) +
+    geom_line() +
+    scale_x_date(date_breaks = '5 years', date_labels = '%Y') +
+    labs(x = NULL)
+```
+
+
+```{r cet_predictions, fig.width = 13}
+predict_ses <- as_tibble(predict(model_ses))
+predict_holt <- as_tibble(predict(model_holt))
+n <- nrow(predict_ses)
+
+predictions <- tibble(
+    index = seq(make_date(2005, 1, 1), by = 'year', length.out = n),
+    temperature = rep(NA, n),
+    forecast_ses = predict_ses$`Point Forecast`,
+    forecast_holt = predict_holt$`Point Forecast`
+)
+```
+
+
+```{r cet_plot_predictions}
+temp_df %>% 
+    select(index, temperature, starts_with('forecast')) %>% 
+    bind_rows(predictions) %>% 
+    pivot_longer(temperature:forecast_holt, names_to = 'series', values_to = 'temperature') %>% 
+    ggplot(aes(index, temperature, colour = series)) +
+    geom_line() +
+    scale_x_date(date_breaks = '5 years', date_labels = '%Y') +
+    scale_y_continuous(limits = c(8, 11)) +
+    labs(x = NULL)
+```
+
+## Holt-Winters exponential smoothing
+
+Holt’s exponential smoothing method applies only to non-seasonal time series.
+
+A further extension of exponential smoothing, that includes both a linear trend component and seasonality, is known as Holt–Winters exponential smoothing.
+
+This method is appropriate for time series that can be described by an additive model with a linear trend component $m + bt$ and a seasonal component $s_t$, that is:
+
+
+$$
+X_t = m + bt + s_t + W_t
+$$
+
+
+So now we have a third smoothing parameter &gamma;
+
+This parameter adjusts the estimate of the seasonal component. Optimal values of the three parameters &alpha;, &beta;
+and &gamma; may be chosen by minimizing the SSE
+
+
+## Forecasting monthly temperatures
+
+
+```{r load_cet_monthly}
+temp_df <- read_csv(
+    'data/monthly_temperature_changes_1970_to_2004.csv',
+    col_types = cols(
+        index = col_date(format='%Y-%m-%d'),
+        temperature = col_double()
+    )
+)
+```
+
+
+```{r cet_year_breaks}
+year_breaks <- seq(make_date(1970, 1, 1), by = 'year', length.out = 36)
+range(year_breaks)
+range(temp_df$index)
+```
+
+
+
+```{r cet_monthly_plot, fig.width = 11}
+temp_df %>% 
+    ggplot(aes(index, temperature)) +
+    geom_line() +
+    scale_x_date(
+        breaks = year_breaks,
+        date_labels = '%Y',
+        expand = c(0.02, 0)
+    ) +
+    scale_y_continuous(limits = c(-5, 20)) +
+    labs(x = NULL) +
+    ggtitle('Monthly average temperatures in Central England from January 1970 to December 2004') +
+    date_rotation
+
+```
+
+```{r cet_monthly_ts}
+cet_ts <- ts(temp_df$temperature, start = c(1970, 1), frequency = 12)
+```
+
+
+
+```{r cet_monthly_seasonal_plot, fig.width = 12}
+forecast::ggseasonplot(
+    cet_ts,
+    main = 'Seasonal plot of Monthly average temperatures',
+    year.labels = FALSE
+)
+```
+
+
+```{r cet_monthly_models}
+model_ses <- forecast::ses(cet_ts, initial = 'optimal')
+model_holt <- forecast::holt(cet_ts, initial='optimal')
+model_hw <- forecast::hw(cet_ts, initial = 'optimal')
+coef(model_ses$model)
+coef(model_holt$model)
+coef(model_hw$model)
+
+```
+
+```{r cet_monthly_fitted}
+temp_df <- temp_df %>% 
+    mutate(
+        simple = fitted(model_ses),
+        holt = fitted(model_holt),
+        holt_winters = fitted(model_hw)
+    )
+```
+
+
+
+```{r plot_cet_monthly_models, fig.width = 10, fig.height = 5}
+temp_df %>% 
+    filter(year(index) > 2003) %>% 
+    rename(observed = temperature) %>% 
+    pivot_longer(observed:holt_winters, names_to = 'series', values_to = 'temperature') %>% 
+    ggplot(aes(index, temperature)) +
+    geom_line(aes(colour = series, linetype = series)) +
+    scale_x_date(
+        date_breaks = '1 month',
+        date_labels = '%b\n%Y'
+        
+    ) +
+    scale_y_continuous(limits = c(0, 20)) +
+    labs(x = NULL, y = 'Temperature (C)')
+```
+
