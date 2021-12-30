@@ -120,6 +120,24 @@ protein_groups
 
 ```
 
+or
+
+```{r print_clusters_definition}
+print_clusters <- function(labels, k) {
+    for(i in 1:k) {
+        print(paste("cluster", i))
+        print(protein[labels==i,c("Country","RedMeat","Fish","Fruit_and_Veg")])
+    }
+}
+```
+
+
+```{r print_hclust_clusters}
+print_clusters(cutree(protein_clustered, k=5), 5)
+```
+
+
+
 ```{r protein_group_means_1}
 protein_groups %>% 
     group_by(protein_group) %>% 
@@ -192,7 +210,7 @@ cboot_hclust <- clusterboot(
 ```
 
 
-```{r}
+```{r cluster_stabilities}
 # cluster stabilities
 cboot_hclust$bootmean
 # the count of how many times each cluster was dissolved
@@ -300,9 +318,9 @@ cluster_meas %>%
 
 The plot shows that as k increases, BSS increases, while WSS decreases. We want a clustering with a good balance of BSS and WSS. To find such a clustering, we have to look at a couple of measures related to the BSS and the WSS.
 
-## Galinkski-Harabasz index
+## Calinkski-Harabasz index
 
-```{r galinkski_harabasz, warning=FALSE}
+```{r calinkski_harabasz, warning=FALSE}
 n <- nrow(protein_matrix)
 # within cluster variance (the average wss)
 cluster_meas <- cluster_meas %>% 
@@ -342,21 +360,35 @@ p_clusters <- kmeans(
     iter.max = 100
 )
 summary(p_clusters)
-p_clusters$centers
-# centers are in scaled coordinates
+```
 
+```{r cluster_centers}
+# centers are in scaled coordinates - the rows are the centroids of each cluster
+p_clusters$centers
+```
+
+
+```{r cluster_counts}
 # the number of points in each cluster - needs to be well balanced
 p_clusters$size
+```
+
+```{r assign_kmeans_cluster_groups}
 # cluster is a vector of cluster labels
 protein <- protein %>% 
     mutate(cluster = factor(p_clusters$cluster))
+```
 
+```{r compare_kemeans_and_hclust_groups}
 # in this case kmeans and hclust return the same clustering
 # this is not always true
 protein %>% 
     select(Country, RedMeat, Fish, Fruit_and_Veg, cluster, protein_group) %>% 
     arrange(cluster, Country)
+```
 
+
+```{r kmeans_cluster_means}
 protein %>% 
     select(Country, RedMeat, Fish, Fruit_and_Veg, cluster) %>%
     group_by(cluster) %>% 
@@ -364,30 +396,63 @@ protein %>%
 ```
 
 
+
 ### Finding `k`
 
-```{r plotting_cluster_criteria}
+To run `kmeans()`, you must know k. The `fpc` package (the same package that has `clusterboot()`) has a function called         `kmeansruns()` that calls kmeans() over a range of k and estimates the best k. It then returns its pick for the best value of k, the output of kmeans() for that value, and a vector of criterion values as a function of k. Currently, `kmeansruns()` has two criteria: the Calinski-Harabasz Index ("ch"), and the [average silhouette width](https://en.wikipedia.org/wiki/Silhouette_(clustering)) ("asw")
+
+```{r kmeans_ch}
+# Run kmeansruns() from 1–10 clusters, and the CH criterion.
 clustering_ch <- fpc::kmeansruns(
     protein_matrix,
     krange = 1:10,
     criterion = 'ch'
 )
+clustering_ch$bestk
+# ch criterion as a function of k
+clustering_ch$crit
+
+```
+
+
+```{r kmeans_asw}
+# Run kmeansruns() from 1–10 clusters, and the ASW criterion
 clustering_asw <- fpc::kmeansruns(
     protein_matrix,
     krange = 1:10,
     criterion = 'asw'
 )
-
-clustering_ch$bestk
 clustering_asw$bestk
-
 # asw criterion as a function of k
 clustering_asw$crit
-# ch criterion as a function of k
-clustering_ch$crit
-# compare ch values in the hclust clustering
-cluster_meas$ch_crit
 ```
+
+Compare the CH values for kmeans() and hclust(). They’re not quite the same, because the two algorithms didn’t pick the same clusters.
+
+```{r kmeans_ch_and_hclust_ch}
+# compare ch values in the hclust clustering
+rbind(
+    clustering_ch$crit,
+    cluster_meas$ch_crit
+)
+```
+
+```{r plot_ch_and_asw}
+tibble(
+    k=1:10,
+    ch=scale(clustering_ch$crit),
+    asw=scale(clustering_asw$crit)
+) %>% 
+    pivot_longer(c(ch, asw), names_to='measure', values_to='score') %>% 
+    ggplot(aes(x=k, y=score, color=measure)) +
+    geom_point(aes(shape=measure)) + geom_line(aes(linetype=measure)) +
+    scale_x_continuous(breaks=1:10, labels=1:10)
+
+```
+
+We can run `clusterboot()` using the k-means algorithm, as well.
+
+
 
 ```{r kmeans_clusterboot}
 cboot <- fpc::clusterboot(
@@ -403,3 +468,6 @@ cboot$bootmean
 cboot$bootbrd
 ```
 
+### Assigning new points to clusters
+
+TODO

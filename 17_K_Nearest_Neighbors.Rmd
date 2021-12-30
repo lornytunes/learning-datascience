@@ -1,0 +1,190 @@
+---
+title: "K-Nearest Neighbors"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE
+)
+options(digits = 3)
+library(tidyverse)
+
+accuracy <- function(cm) {
+    sum(diag(cm)) / sum(cm)
+}
+```
+
+## Stock Market Data
+
+```{r load_stock_market}
+stock_market <- read_rds('data/stock_market.rds')
+```
+
+```{r stock_market_counts_for_year}
+stock_market %>% 
+    count(Year)
+```
+
+```{r stock_market_counts_for_direction}
+stock_market %>% 
+    count(Direction)
+```
+
+
+
+```{r stock_market_train_test}
+# everrything before 2005
+train <- stock_market %>% 
+    filter(Year < 2005)
+# 2005
+test <- stock_market %>% 
+    filter(Year >= 2005)
+```
+
+
+```{r stock_market_lag1_lag2}
+stock_market %>% 
+    select(starts_with('Lag')) %>% 
+    cor() %>% 
+    round(digits = 2)
+```
+
+
+### Stock Market KNN
+
+1. A matrix containing the predictors associated with the training data,  labeled train.X below.
+2. A matrix containing the predictors associated with the data for which we wish to make predictions, labeled test.X below.
+3. A vector containing the class labels for the training observations, labeled train.Direction below.
+4. A value for K, the number of nearest neighbors to be used by the classifier.
+
+
+
+```{r stock_market_knn_data}
+train_x <- train %>% 
+    select(Lag1, Lag2) %>% 
+    data.matrix()
+test_x <- test %>% 
+    select(Lag1, Lag2) %>% 
+    data.matrix()
+train_y <- train %>% 
+    pull(Direction)
+
+test_y <- test %>% 
+    pull(Direction)
+
+```
+
+```{r stock_market_knn_1}
+# k = 1
+knn_1 <- class::knn(
+    train_x,
+    test_x,
+    train_y,
+    k = 1
+)
+# how well does <2005 predict 2005
+cm_1 <- table(`<2005` = knn_1, `2005` = test_y)
+cm_1
+accuracy(cm_1)
+```
+
+Only 50% of the observations were correctly predicted. `k=1` is far too flexible
+
+
+```{r stock_market_knn_3}
+knn_3 <- class::knn(
+    train_x,
+    test_x,
+    train_y,
+    k = 3
+)
+cm_3 <- table(`<2005` = knn_3, `2005` = test_y)
+cm_3
+accuracy(cm_3)
+
+```
+
+## Caravan Insurance
+
+
+```{r load_caravan_data}
+caravan <- read_rds('data/caravan.rds')
+prop.table(xtabs(~Purchase, data = caravan))
+```
+
+```{r caravan_missing}
+caravan %>% 
+    select(-Purchase) %>% 
+    summarise_all(
+        ~sum(is.na(.))
+    ) %>% 
+    pivot_longer(everything(), names_to = 'Var', values_to = 'NAs') %>% 
+    filter(NAs > 0) %>% 
+    arrange(desc(NAs))
+```
+
+
+```{r caravan_train_test}
+caravan_m <- scale(select(Caravan, -Purchase))
+purchase <- pull(caravan, Purchase)
+# rgroup <- sample(1:nrow(caravan), 1000, replace = F)
+rgroup <- 1:1000
+apply(caravan_m, 2, var)
+round(apply(caravan_m, 2, mean), 2)
+train_x <- caravan_m[-rgroup,]
+train_y <- purchase[-rgroup]
+test_x <- caravan_m[rgroup,]
+test_y <- purchase[rgroup]
+rm(caravan_m, rgroup)
+```
+
+
+```{r caravan_knn_1}
+table(test_y)
+set.seed(1)
+knn_1 <- class::knn(
+    train_x,
+    test_x,
+    train_y,
+    k = 1
+)
+cm_1 <- table(actual = test_y, predicted = knn_1)
+cm_1
+# accuracy is not good for rare data
+accuracy(cm_1)
+# error rate
+prop.table(table(test_y != knn_1)) * 100
+# you could get this down to 6% by always predicting No
+prop.table(table(test_y)) * 100
+```
+
+
+```{r knn_1_row_proportions}
+cm_1
+table(test_y)
+prop.table(cm_1, margin = 2)
+```
+
+About double the rate predicted by chance
+
+
+```{r caravan_knn_3}
+knn_3 <- class::knn(
+    train_x,
+    test_x,
+    train_y,
+    k = 3
+)
+cm_3 <- table(actual = test_y, predicted = knn_3)
+prop.table(cm_3, margin = 2)
+```
+
+```{r caravan_knn_n}
+map(1:5, ~prop.table(
+    table(actual = test_y, predicted = class::knn(train_x, test_x, train_y, k = .)),
+    margin = 2
+))
+```
+
+It appears that KNN is finding some real patterns in a difficult data set!
