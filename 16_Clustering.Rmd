@@ -1,0 +1,405 @@
+---
+title: "Clustering Methods"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(fpc)
+library(ggrepel)
+options(digits = 4)
+```
+
+In the previous chapter, we covered using the vtreat package to prepare messy real-world data for modeling.
+
+In this chapter, we’ll look at methods to discover unknown relationships in data.
+
+These methods are called unsupervised methods. With unsupervised methods, there’s no outcome that you’re trying to predict; instead, you want to discover patterns in the data that perhaps you hadn’t previously suspected.
+
+For example, you may want to find groups of customers with similar purchase patterns, or correlations between population movement and socioeconomic factors. 
+
+In cluster analysis, the goal is to group the observations in your data into clusters such that every datum in a cluster is more similar to other datums in the same cluster than it is to datums in other clusters. For example, a company that offers guided tours might want to cluster its clients by behavior and tastes: which countries they like to visit; whether they prefer adventure tours, luxury tours, or educational tours; what kinds of activities they participate in; and what sorts of sites they like to visit.
+
+Such information can help the company design attractive travel packages and target the appropriate segments of their client base with them.
+
+## Preparing the data
+
+```{r read_protein, message=FALSE}
+protein <- read_tsv(
+    'data/protein.tsv'
+) %>% rename(Fruit_and_Veg = `Fr&Veg`)
+skimr::skim(protein)
+```
+
+```{r protein_matrix}
+rm_scales <- function(scaled_matrix) {
+    attr(scaled_matrix, 'scaled:center') <- NULL
+    attr(scaled_matrix, 'scaled:scale') <- NULL
+    return(scaled_matrix)
+}
+protein_matrix <- protein %>% 
+    select(-Country) %>% 
+    scale() %>% 
+    rm_scales()
+```
+
+```{r protein_sample}
+# select two contrasting features
+protein_sample <- protein %>% 
+    select(Country, RedMeat, Fruit_and_Veg)
+```
+
+```{r plot_protein_unscaled}
+protein_sample %>% 
+    pivot_longer(c(RedMeat, Fruit_and_Veg), names_to = 'Source', values_to = 'Protein_Consumption') %>% 
+    ggplot(aes(x = Protein_Consumption, fill = Source)) +
+    geom_density(alpha=0.2) +
+    labs(y = NULL) +
+    ggtitle('Unscaled')
+```
+
+
+
+```{r plot_protein_scaled}
+protein_sample %>% 
+    mutate(
+        RedMeat = scale(RedMeat),
+        Fruit_and_Veg = scale(Fruit_and_Veg)
+    ) %>% 
+    pivot_longer(c(RedMeat, Fruit_and_Veg), names_to = 'Source', values_to = 'Protein_Consumption') %>% 
+    ggplot(aes(x = Protein_Consumption, colour = Source)) +
+    geom_density() +
+    labs(y = NULL) +
+    ggtitle('Scaled')
+```
+
+
+The above plots show the effect of scaling on two variables, Fruit_and_Veg and RedMeat. The raw (unscaled) variables have different ranges, reflecting the fact that the amount of protein supplied via red meat tends to be higher than the amount of protein supplied via fruits and vegetables. The scaled variables now have similar ranges, which makes comparing relative variation in each variable easier.
+
+## Hierarchical Clustering
+
+```{r distance_matrix}
+dist_matrix <- dist(protein_matrix, method = 'euclidean')
+```
+
+
+```{r hierarchical_cluster, fig.width = 10}
+
+# round(dist_matrix, 2)
+protein_clustered <- hclust(
+    dist_matrix,
+    method = 'ward.D'
+)
+
+```
+
+```{r hierarchical_cluster_plot, fig.width = 10}
+plot(protein_clustered, labels = protein$Country)
+# cut the tree so that 5 clusters are produced. h=8 would produce the same result
+rect.hclust(protein_clustered, k = 5)
+```
+
+
+```{r hierarchical_cluster_selection}
+cutree(protein_clustered, k=5)
+```
+
+
+
+Extract the members of each cluster
+
+```{r hierarchical_cluster_extraction}
+protein <- protein %>% 
+    mutate(protein_group = factor(cutree(protein_clustered, k = 5)))
+
+protein_groups <- protein %>% 
+    select(Country, RedMeat, Fish, Fruit_and_Veg, protein_group) %>% 
+    arrange(protein_group, Country)
+protein_groups
+
+```
+
+```{r protein_group_means_1}
+protein_groups %>% 
+    group_by(protein_group) %>% 
+    summarise_if(is.numeric, mean)
+```
+
+or another way
+
+```{r protein_group_means_2}
+protein_groups %>% 
+    group_by(protein_group) %>% 
+    summarise(
+        RedMeat = mean(RedMeat),
+        Fish = mean(Fish),
+        Fruit_and_Veg = mean(Fruit_and_Veg)
+    )
+```
+
+
+
+There’s a certain logic to these clusters: the countries in each cluster tend to be in the same geographical region. It makes sense that countries in the same region would have similar dietary habits. You can also see that
+
+- Cluster 2 is made of countries with higher-than-average red meat consumption.
+- Cluster 4 contains countries with higher-than-average fish consumption, but
+low produce consumption.
+- Cluster 5 contains countries with high fish and produce consumption.
+
+## Visualizing clusters using principal components analysis
+
+```{r protein_pca}
+
+# predict(protein_princ, protein_matrix)[, 1:2]
+protein_princ <- bind_cols(
+    protein,
+    as_tibble(prcomp(protein_matrix)$x)
+)
+```
+
+```{r protein_pca_plot, fig.height=8, fig.width=12}
+protein_princ %>% 
+    ggplot(aes(x = PC1, y = PC2)) +
+    # all points
+    geom_point(data = select(protein_princ, PC1, PC2), colour = 'darkgrey') +
+    # cluster points (due to the faceting)
+    geom_point() +
+    # label the cluster points
+    geom_text_repel(aes(label = Country)) +
+    facet_wrap(~protein_group, ncol = 3, labeller = label_both)
+```
+
+
+## Stability of the clusters
+
+1. Cluster the data as usual.
+1. Draw a new dataset (of the same size as the original) by resampling the original dataset with replacement (meaning that some of the data points may show up more than once, and others not at all). 
+1. Cluster the new dataset.
+1. For every cluster in the original clustering, find the most similar cluster in the new clustering (the one that gives the maximum Jaccard coefficient) and record that value. If this maximum Jaccard coefficient is less than 0.5, the original cluster is considered to be dissolved—it didn’t show up in the new clustering. A cluster that’s dissolved too often is probably not a real cluster.
+1. Repeat steps 2–3 several times.
+
+```{r clusterboot}
+
+cboot_hclust <- clusterboot(
+    protein_matrix,
+    clustermethod = hclustCBI,
+    method = 'ward.D',
+    k = 5,
+    # do no show resampling runs on the screen
+    count = FALSE
+)
+```
+
+
+```{r}
+# cluster stabilities
+cboot_hclust$bootmean
+# the count of how many times each cluster was dissolved
+# over the default run of 100 iterations
+cboot_hclust$bootbrd
+```
+
+
+```{r protein_groups_from_clusterboot, paged.print=TRUE}
+protein <- protein %>% 
+    mutate(protein_group = factor(cboot_hclust$result$partition))
+protein %>% 
+    select(Country, RedMeat, Fish, Fruit_and_Veg, protein_group) %>% 
+    arrange(protein_group, Country)
+```
+
+```{r protein_groups_from_clusterboot_means}
+protein %>% 
+    group_by(protein_group) %>% 
+    summarise_if(is.numeric, mean)
+```
+
+
+The `clusterboot()` results show that the cluster of countries with high fish consumption (cluster 4) is highly stable: the cluster stability is high, and the cluster was dissolved relatively few times. Clusters 1 and 2 are also quite stable; cluster 5 less so (you can see in figure 9.8 that the members of cluster 5 are separated from the other countries, but also fairly separated from each other).
+
+Cluster 3 has the characteristics of what we’ve been calling the _other_ cluster.
+
+## WSS
+
+```{r calculating_total_wss}
+# calculate squared distance between 2 vectors
+sqr_dist <- function(x, y) {
+    sum((x - y) ^ 2)
+}
+
+# calculate the WSS for a single cluster
+# represented as a matrix with one row for every point
+wss_cluster <- function(clustermat) {
+    # calculate the centroid of the cluster
+    c0 <- colMeans(clustermat)
+    # calculate the squared difference of every point
+    # in the cluster from the centroid
+    distances <- apply(clustermat, 1, FUN = function(row) {sqr_dist(row, c0)})
+    # finally, sum the distances
+    return(sum(distances))
+}
+# compute the total WSS from a set of data points and cluster labels
+wss_totals <- function(dmatrix, labels) {
+    k <- length(unique(labels))
+    map_dbl(1:k, ~wss_cluster(subset(dmatrix, labels == .)))
+}
+
+sum(wss_totals(protein_matrix, protein$protein_group))
+```
+
+The total WSS will decrease as the number of clusters increases, because each cluster will be smaller and tighter. The hope is that the rate at which the WSS decreases will slow down for k beyond the optimal number of clusters. In other words, the graph of WSS versus k should flatten out beyond the optimal k, so the optimal k will be at the “elbow” of the graph. Let’s try calculating WSS for up to 10 clusters.
+
+```{r plot_wss}
+kmax <- 10
+get_wss <- function(dmatrix, max_clusters) {
+    pfit <- hclust(
+        dist(dmatrix, method = 'euclidean'),
+        method = 'ward.D'
+    )
+    map_dbl(1:max_clusters, ~sum(wss_totals(dmatrix, cutree(pfit, k = .))))
+}
+cluster_meas <- tibble(
+    nclusters = 1:kmax,
+    wss = get_wss(protein_matrix, kmax)
+)
+
+cluster_meas %>%
+    ggplot(aes(x = nclusters, y = wss)) +
+    geom_point() +
+    geom_line() +
+    scale_x_continuous(breaks = 1:kmax) +
+    scale_y_continuous(limits = c(25, 220)) +
+    ggtitle('WSS as a function of k')
+```
+
+
+Unfortunately, in this case the elbow of the graph is hard to see, although if you squint your eyes you might be able to convince yourself that there is an elbow at k = 2, and another one at k = 5 or 6. This means the best clusterings might be 2 clusters, 5 clusters, or 6 clusters.
+
+```{r compute_bss}
+# calculates the total sum of squares
+
+total_ss <- function(dmatrix) {
+    grand_mean <- colMeans(dmatrix)
+    sum(apply(dmatrix, 1, FUN = function(row) {sqr_dist(row, grand_mean)}))
+}
+tss <- total_ss(protein_matrix)
+cluster_meas <- cluster_meas %>% 
+    mutate(bss = tss - wss)
+
+cluster_meas %>% 
+    # put wss and bss in the same column
+    pivot_longer(c(wss, bss), names_to = 'measure', values_to = 'value') %>% 
+    ggplot(aes(x = nclusters, y = value)) +
+    geom_point() +
+    geom_line() +
+    facet_wrap(~measure, ncol = 1, scale = 'free_y') +
+    scale_x_continuous(breaks = 1:10)
+
+```
+
+The plot shows that as k increases, BSS increases, while WSS decreases. We want a clustering with a good balance of BSS and WSS. To find such a clustering, we have to look at a couple of measures related to the BSS and the WSS.
+
+## Galinkski-Harabasz index
+
+```{r galinkski_harabasz, warning=FALSE}
+n <- nrow(protein_matrix)
+# within cluster variance (the average wss)
+cluster_meas <- cluster_meas %>% 
+    mutate(within_cluster_variance = wss / (n - nclusters))
+# between cluster variance (the average contribution to the BSS from each cluster)
+cluster_meas <- cluster_meas %>% 
+    mutate(between_cluster_variance = bss / (nclusters - 1))
+# the calinski-harabasz index
+cluster_meas <- cluster_meas %>% 
+    mutate(ch_crit = between_cluster_variance / within_cluster_variance)
+
+cluster_meas %>% 
+    ggplot(aes(x = nclusters, y = ch_crit)) +
+    geom_point() +
+    geom_line() +
+    scale_x_continuous(breaks = 1:kmax)
+
+```
+
+
+Again, you can think of B as the average contribution to the BSS from each cluster. A good clustering should have a small average WSS and a large average BSS, so we might try to maximize the ratio of B to W. This is the Calinski-Harabasz (CH) index.
+
+BSS measures how far apart the clusters are from each other. A good clustering has a small WSS (all the clusters are tight around their centers) and a large BSS. We can compare how BSS and WSS vary as we vary the number of clusters.
+
+You see that the CH criterion is maximized at k = 2, with another local maximum at k = 5. The k = 2 clustering corresponds to the first split of the protein data dendrogram if you use `clusterboot()` to do the clustering, you’ll see that the clusters are highly stable, though perhaps not very informative.
+
+
+## K-means
+
+```{r kmeans}
+kbest_p <- 5
+# 5 clusters, 100 random starts and 100 maximum interations per run
+p_clusters <- kmeans(
+    protein_matrix,
+    kbest_p,
+    nstart = 100,
+    iter.max = 100
+)
+summary(p_clusters)
+p_clusters$centers
+# centers are in scaled coordinates
+
+# the number of points in each cluster - needs to be well balanced
+p_clusters$size
+# cluster is a vector of cluster labels
+protein <- protein %>% 
+    mutate(cluster = factor(p_clusters$cluster))
+
+# in this case kmeans and hclust return the same clustering
+# this is not always true
+protein %>% 
+    select(Country, RedMeat, Fish, Fruit_and_Veg, cluster, protein_group) %>% 
+    arrange(cluster, Country)
+
+protein %>% 
+    select(Country, RedMeat, Fish, Fruit_and_Veg, cluster) %>%
+    group_by(cluster) %>% 
+    summarise_if(is.numeric, mean)
+```
+
+
+### Finding `k`
+
+```{r plotting_cluster_criteria}
+clustering_ch <- fpc::kmeansruns(
+    protein_matrix,
+    krange = 1:10,
+    criterion = 'ch'
+)
+clustering_asw <- fpc::kmeansruns(
+    protein_matrix,
+    krange = 1:10,
+    criterion = 'asw'
+)
+
+clustering_ch$bestk
+clustering_asw$bestk
+
+# asw criterion as a function of k
+clustering_asw$crit
+# ch criterion as a function of k
+clustering_ch$crit
+# compare ch values in the hclust clustering
+cluster_meas$ch_crit
+```
+
+```{r kmeans_clusterboot}
+cboot <- fpc::clusterboot(
+    protein_matrix,
+    clustermethod = fpc::kmeansCBI,
+    runs = 100,
+    iter.max = 100,
+    krange = kbest_p,
+    seed = 15555,
+    count = FALSE
+)
+cboot$bootmean
+cboot$bootbrd
+```
+

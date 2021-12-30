@@ -93,13 +93,14 @@ model_2 <- glm((churn == 1) ~ Var1, data = churn_train_all, family = binomial)
 summary(model_2)
 ```
 
-We saw how to read the model summary in detail in section 7.2. What jumps out here is the line _44407 observations deleted due to missingness._ This means the modeling procedures threw out 44407 of our 45028 training rows, building a model on the remaining 621 rows of data. So in addition to columns that do not vary, we have columns that have damaging amounts of missing values.
+We saw how to read the model summary in detail in section 7.2. What jumps out here is the line _44395 observations deleted due to missingness._ This means the modeling procedures threw out 44407 of our 45028 training rows, building a model on the remaining 621 rows of data. So in addition to columns that do not vary, we have columns that have damaging amounts of missing values.
 
 
 ```{r number_of_factor_levels}
 churn_level_counts <- churn_train_all %>% 
     select_if(is.factor) %>% 
-    map_df(~length(levels(.))) %>% 
+    map_df(~length(levels(.x))) %>% 
+    # convert all columns to a single factor with the variable names as values
     pivot_longer(everything(), names_to = 'Factor', values_to='Number_of_levels') %>% 
     arrange(desc(Number_of_levels))
 churn_level_counts
@@ -111,7 +112,7 @@ Factors are R’s representation for strings taken from a known set. And this is
 ```{r number_of_distinct_factor_values}
 churn_value_counts <- churn_train_all %>% 
     select_if(is.factor) %>% 
-    map_df(~length(unique(.))) %>% 
+    map_df(~length(unique(.x))) %>% 
     pivot_longer(everything(), names_to = 'Factor', values_to = 'Number_of_unique_values') %>% 
     arrange(desc(Number_of_unique_values))
 churn_value_counts
@@ -120,9 +121,10 @@ churn_value_counts
 
 This tells us our training data sample did not see all known values for this variable. Our held-out test set contains, in addition to values seen during training, new values not in the training set. This is quite common for string-valued or categorical variables with a large number of levels, and causes most R modeling code to error-out when trying to make predictions on new data.
 
-```{r}
+```{r proportion_of_unique_values_to_the_number_of_levels}
 churn_level_counts %>% 
     inner_join(churn_value_counts, by = 'Factor') %>% 
+    # a value less than 1 indicates disparities between test and train
     mutate(Proportion_seen = Number_of_unique_values / Number_of_levels)
 ```
 
@@ -204,13 +206,16 @@ Here is a situation where the information that a variable is missing is more inf
 ### Level variables
 
 ```{r level_variables}
-
-
 score_frame %>% 
     filter(origName == 'Var218')
 ```
 
 The original variable `Var218` produced four derived variables. In particular, notice that the levels `cJvF` and `UYBR` each gave us new derived columns or variables.
+
+```{r level_variable_cjvF}
+table(churn_train_treated$Var218_lev_x_cJvF)
+```
+
 
 Level variables (lev) `Var218_lev_x_cJvF` and `Var218_lev_x_UYBR` are indicator variables that have the value 1 when the original `Var218` had the values `cJvF` and `UYBR` respectively.
 
@@ -278,7 +283,7 @@ df_comparison %>%
 Let’s look at what happened to another variable that was giving us trouble: `Var200`. Recall that this variable has 15415 possible values, of which only 13324 appear in the training data.
 
 
-```{r}
+```{r var_200_variables}
 score_frame %>% 
     filter(origName == 'Var200')
 ```
@@ -288,7 +293,7 @@ Note that vtreat only returned one indicator variable, indicating missing values
 In our example, the `designTreatmentsC()` method recoded the original 230 explanatory variables into 546 new all-numeric explanatory variables that have no missing values. The idea is that these 546 variables are easier to work with and have a good shot of representing most of the original predictive signal in the data.
 
 
-```{r}
+```{r var_200_levels}
 churn_train_treated %>% 
     modify_at(vars(contains('_lev_')), as.integer) %>% 
     modify_if(is.double, ~round(., digits = 4)) %>% 
@@ -299,7 +304,7 @@ churn_train_treated %>%
 
 ### Using the treatment plan
 
-```{r}
+```{r treat_calibrate_data}
 churn_calibrate_treated <- vtreat::prepare(
     treatment_plan,
     churn_calibrate,
@@ -314,7 +319,7 @@ As we mentioned earlier, you can think of the `Var200_catB` variable as a single
 
 Let’s look at the AUC of this model on the training and calibration sets:
 
-```{r}
+```{r var_200_auc}
 sigr::calcAUC(
     churn_train_treated$Var200_catB,
     churn_train_treated$churn
@@ -394,7 +399,7 @@ This means decisions made on the training data have a good chance of being corre
 k <- 1
 (significance_cutoff <- k / nrow(score_frame))
 score_frame <- score_frame %>% 
-  mutate(selected = sig < significance_cutoff)
+    mutate(selected = sig < significance_cutoff)
 
 
 ```
