@@ -358,24 +358,19 @@ This model is called the additive decomposition model. It is a decomposition mod
 
 ## Estimating the components of a time series
 
+
+
+
 ```{r load_airline}
 airline <- read_csv(
-    'data/airline_monthly_1974_1999.sav',
+    'data/airline_monthly_1974_1999.csv',
     col_types = cols(
-        year = col_integer(),
-        month = col_integer(),
+        index = col_date(format='%Y-%m-%d'),
         passengers = col_integer()
     )
 )
 ```
 
-```{r airline_etl}
-airline <- airline %>% 
-    mutate(
-        index = seq(make_date(1974, 1, 1), by = 'month', length.out = nrow(airline))
-    ) %>% 
-    select(index, passengers)
-```
 
 ```{r airline_ts}
 airline_ts <- ts(airline$passengers, start=c(1974, 1), frequency = 12)
