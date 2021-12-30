@@ -488,18 +488,24 @@ Thus these transformations remove the seasonal effect.
 
 ### Visits overseas: smoothing out the seasonal component
 
-```{r ips_ma12}
+```{r ips_box_cox_transform}
 caret::BoxCoxTrans(ips_df$passengers)$lambda
+```
 
+
+```{r ips_moving_average_12}
 ips2 <- ips_df %>% 
     mutate(passengers = sqrt(passengers)) %>% 
     select(-year)
 
+ips2 <- ips2 %>% 
+    # ma12 removes the seasonal component
+    mutate(trend = as.double(forecast::ma(passengers, order = 12, centre = TRUE)))
+```
+
+```{r ips_moving_average_12_plot}
 c(start_week, end_week) %<-% range(ips2$index)
 w_breaks <- seq(start_week, length.out = 6, by = '5 years')
-
-ips2 <- ips2 %>% 
-    mutate(trend = as.double(forecast::ma(passengers, order = 12, centre = TRUE)))
 
 ips2 %>% 
     pivot_longer(c(passengers, trend), names_to = 'series', values_to = 'passengers') %>% 
@@ -510,8 +516,8 @@ ips2 %>%
         date_label = '%Y'
     ) +
     facet_wrap(~series, ncol = 1)
-
 ```
+
 
 The seasonal variation has been smoothed out of the series, leaving the (smoothed) underlying trend and some irregular variation from month to month.
 
