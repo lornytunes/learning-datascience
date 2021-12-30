@@ -1,0 +1,645 @@
+---
+title: "Time Series Components"
+output: html_document
+editor_options: 
+    chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    dpi = 100,
+    fig.width = 11,
+    fig.height = 6,
+    message = F,
+    error = F,
+    warning = F,
+    cache = F
+)
+options(digits=4)
+library(tidyverse)
+library(lubridate)
+library(xts)
+library(zeallot)
+library(fpp2)
+
+# for long dates on x axis
+date_rotation <- ggExtra::rotateTextX(angle = 45, vjust = 1, hjust = 1)
+
+```
+
+
+## Trend and Seasonality
+
+### International Passenger Survey
+
+```{r load_ips}
+ips_df <- read_tsv(
+    'data/international_passenger_survey.tsv',
+    col_types = cols(
+        passengers = col_integer()
+    )
+)
+```
+
+```{r ips_etl}
+ips_df <- ips_df %>% 
+    mutate(
+        # index of a time series is an ordered sequence of dates
+        index = seq(make_date(1980, 1, 1), by = 'month', length.out = nrow(ips_df)),
+        year = as.integer(year(index))
+    ) %>% 
+    # only keep years up to and including 2004
+    filter(year < 2005)
+```
+
+
+The data collected for each month from January 1980 to December 2004 are presented in table form below.
+
+Each entry in the table is the number of thousands of visits overseas by UK residents during a particular month and year.
+
+The month is specified in the row at the top of the table, and the year is given in the column on the left-hand side of the table.
+
+```{r ips_table}
+ips_df %>% 
+    mutate(
+        # short month name (e.g jan, feb, mar)
+        month = strftime(index, '%b')
+    ) %>% 
+    select(year, month, passengers) %>% 
+    # make the months the columns
+    pivot_wider(names_from = 'month', values_from = 'passengers')
+```
+
+- Look down the columns. Comment briefly on the variation from year to year.
+- Now look across the rows. Identify the peak months for visits overseas by UK residents.
+
+
+Time series data in tabular form can be used to identify the presence of marked trends over time and clear seasonal effects.
+
+However, it is much more difficult to identify subtle features, such as the broad shape of the trend, and the magnitude of the seasonal variation.
+
+For this reason, time series data are usually presented graphically rather than in tabular form. The most natural plot is the __time plot__, in which the observed values $x_t$ are plotted against time *t*.
+
+
+```{r ips_plot}
+ips_df %>% 
+    ggplot(aes(index, passengers)) +
+    geom_line() +
+    scale_x_date(
+        date_breaks = '2 years',
+        date_labels = '%Y'
+    ) +
+    scale_y_continuous(limits = c(0, 8500)) +
+    labs(x = NULL, y = 'Visits (thousands)')
+
+```
+
+1. The increasing trend appears to steepen over time, so it is not linear. Perhaps it is roughly quadratic or exponential.
+2. The size of the seasonal fluctuations appears to increase over time.
+
+### Central England temperatures 1659-2004
+
+
+```{r cet_load}
+cet_df <- read_csv(
+    'data/central_england_temperatures_1659_2004.csv',
+    col_types = cols(
+        year = col_integer(),
+        temperature = col_double()
+    )
+)
+```
+
+
+
+```{r cet_etl}
+cet_df <- cet_df %>% 
+    mutate(
+        # replace years with dates
+        index = seq(make_date(1659, 1, 1), by = 'year', length.out = nrow(cet_df))
+    ) %>% 
+    select(index, temperature)
+```
+
+
+
+```{r plot_cet}
+cet_df %>% 
+    ggplot(aes(index, temperature)) +
+    geom_line() +
+    scale_x_date(
+        date_breaks = '50 years',
+        date_labels = '%Y'
+    ) +
+    scale_y_continuous(limits = c(7, 11)) +
+    labs(x = NULL, y = 'Temperature (C)') +
+    ggtitle('Mean annual temperatures for Central England 1659-2004')
+```
+
+Since the observations are annual averages, there is no seasonality in this series. However, it is of interest to examine whether there are any long-term trends, or whether there are any other patterns, such as cycles of years with high and low average temperatures.
+
+There is considerable variability from year to year. The annual average temperatures in the late seventeenth century were perhaps lower than at subsequent times. However, overall there is no obvious pattern. In particular, it is not clear whether or not there is an upward trend.
+
+In this instance, a visual examination of the time plot yields little definite information about long-term trends or other patterns such as cyclic variation
+
+### Beer Consumption
+
+```{r load_beer_consumption}
+beer_df <- read_csv(
+    'data/beer_consumption.csv',
+    col_types = cols(
+        index = col_date(format='%Y-%m-%d'),
+        consumption = col_integer()
+    )
+)
+```
+
+
+```{r beer_consumption_quarterly}
+beer_df %>%
+    mutate(
+        quarter = sprintf('%d: Q%d', year(index), quarter(index))
+    )
+```
+
+```{r beer_consumption_ts}
+beer_ts <- ts(beer_df$consumption, start = c(1991, 1), frequency = 4)
+```
+
+```{r beer_consumption_xts}
+beer_xts <- as.xts(beer_ts)
+```
+
+```{r beer_consumption_xts_from_df}
+beer_xts <- beer_df %>%
+    column_to_rownames(var = 'index') %>%
+    as.xts(descr = 'Quarterly beer consumption in the UK')
+```
+
+
+
+
+
+```{r plot_beer_consumption, fig.width = 11}
+plot.xts(
+    beer_xts,
+    major.ticks = 'year',
+    minor.ticks = 'quarter',
+    grid.ticks.on = 'year',
+    format.labels = '%Y',
+    # ylim = c(10000, 18000),
+    main = 'Quarterly beer consumption in the UK'
+)
+```
+
+There is a marked cyclic pattern of successive highs and lows in these data, which is probably attributable to seasonal variation. There may also be a downward trend, though this is harder to detect owing to the large fluctuations in the data.
+
+
+```{r load_infections}
+infections_df <- read_csv(
+    'data/infections.csv',
+    col_types = cols(
+        year = col_integer(),
+        week = col_integer(),
+        costridium = col_integer(),
+        rsv = col_integer(),
+        rotavirus = col_integer(),
+        salmonella = col_integer()
+    )
+)
+```
+
+
+```{r infections_etl}
+# this is a weekly ts starting from week 27 in 1996
+infections_df <- infections_df %>% 
+    mutate(
+        index = seq(make_date(1996, 7, 1), by = 'weeks', length.out = nrow(infections_df))
+    ) %>% 
+    select(index, clostridium:salmonella)
+```
+
+## Displaying a Time series
+
+```{r plot_salmonella_infections}
+# create time labels for week 1 and week 27 of each year
+# the peaks occur close to week 27 of each year so the time series is seasonal
+# with a summer peak
+c(start_week, end_week) %<-% range(infections_df$index)
+w_breaks <- c(seq(start_week, end_week, by = '26 weeks'), end_week)
+
+# strftime(w_breaks, 'WK %V %Y')
+
+infections_df %>% 
+    ggplot(aes(index, salmonella)) +
+    geom_line() +
+    scale_x_date(
+        breaks = w_breaks,
+        date_labels = 'WK %V %Y',
+        minor_breaks = NULL
+    ) +
+    labs(x = NULL) +
+    date_rotation
+```
+
+
+## Cycles
+
+### Seasonal Plots
+
+A seasonal plot is often useful for displaying seasonality.
+
+In a seasonal plot for annual seasonality, a separate line is drawn for each year: for each year, the values $x_t$ of the time series are plotted against the time of year
+
+
+```{r ips_ts}
+# cycle is annual
+ips_ts <- ts(ips_df$passengers, start = c(1980, 1), frequency=12)
+```
+
+
+```{r ips_seasonal_plot, fig.width = 11, fig.height = 8}
+
+forecast::ggseasonplot(
+    ips_ts,
+    main = 'Seasonal plot of Monthly visits overseas',
+    year.labels = FALSE
+)
+```
+
+```{r ips_plot_xts}
+plot.xts(
+    as.xts(ips_ts),
+    major.ticks = 'year',
+    minor.ticks = NULL,
+    format.labels = '%Y',
+    main = 'Time plot of monthly visits overseas',
+    ylim = c(0, 8000),
+    yaxis.right = FALSE
+)
+```
+
+
+
+
+```{r beer_seasonal_plot}
+forecast::ggseasonplot(
+    beer_ts,
+    main = 'UK Quarterly beer consumption'
+)
+```
+
+## Components
+
+
+```{r ts_components}
+components_df <- tibble(
+    # index = seq(make_date(2020, 3, 1), by = 'quarter', length.out = 8),
+    index = 1:8,
+    trend = seq(100, 170, 10),
+    seasonal = rep(c(20, -35, -15, 30), 2),
+    irregular = c(6.4, -9.2, 4.2, 12.6, -5, 5.6, -6, 2.2)
+)
+components_df <- components_df %>% 
+    mutate(total = trend + seasonal + irregular)
+components_df
+```
+
+
+```{r plot_ts_components}
+components_df %>% 
+    mutate(
+        seasonal = trend + seasonal,
+        irregular = trend + irregular
+    ) %>% 
+    ggplot(aes(x = index)) +
+    geom_line(aes(y = trend), linetype = 'dashed') +
+    geom_line(aes(y = total), colour = 'darkblue', size = 1) +
+    geom_point(aes(y = total), colour = 'darkblue') +
+    geom_linerange(aes(ymin = trend, ymax = seasonal), colour = 'darkred') +
+    geom_point(aes(y = seasonal), colour = 'darkred') +
+    geom_linerange(aes(ymin = trend, ymax = irregular), colour = 'orangered') +
+    geom_point(aes(y = irregular), size = 2, colour = 'orangered') +
+    scale_x_continuous(breaks = 1:8) +
+    scale_y_continuous(limits = c(50, 210)) +
+    labs(x = 'Time', y = NULL)
+```
+
+The seasonal component is $s_t$ and $s_t = s_{t + T}$. If `T = 12` (annual) then $s_t = s_{t + 12}$
+
+These represent departures from the trend and must sum to zero over the period.
+
+The trend and the seasonal component gives the systematic (i.e non-random) part of the series, denoted $\mu_t$
+
+$$
+\mu_t = m_t + s_t
+$$
+
+At each time point `t`, $x_t$ may be regarded as an observation on some random variable $X_t$ with mean $E(X_t)=\mu_t$.
+
+This gives a simple model for $X_t$:
+
+$$
+X_t = \mu_t + W_t
+$$
+
+Where $W_t = X_t - \mu_t$ is a random variable with mean zero and variance $\sigma^2$. The variance is assumed to be constant for all t.
+
+Thus the overall model is
+
+$$
+X_t = m_t + s_t + W_t
+$$
+
+The main difference between this model and models in other areas of statistics is that, for different time points t, the random variables $W_t$ cannot generally be assumed to be independent.
+
+This model is called the additive decomposition model. It is a decomposition model because it is based on a decomposition of the time series into distinct components, and additive because the various components are added together. Note that this model can also be used to represent time series with constant level - that is, models for which $m_t$ is constant, $m_t = m$ for all t, and time series with no seasonal component, for which $s_t = 0$ for all t.
+
+## Estimating the components of a time series
+
+```{r load_airline}
+airline <- read_csv(
+    'data/airline_monthly_1974_1999.sav',
+    col_types = cols(
+        year = col_integer(),
+        month = col_integer(),
+        passengers = col_integer()
+    )
+)
+```
+
+```{r airline_etl}
+airline <- airline %>% 
+    mutate(
+        index = seq(make_date(1974, 1, 1), by = 'month', length.out = nrow(airline))
+    ) %>% 
+    select(index, passengers)
+```
+
+```{r airline_ts}
+airline_ts <- ts(airline$passengers, start=c(1974, 1), frequency = 12)
+```
+
+```{r airline_autoplot, fig.width = 11, fig.height = 5}
+autoplot(airline_ts)
+```
+
+### Transformations
+
+```{r airline_passenger_density_plot}
+airline %>%
+    ggplot(aes(x = passengers)) +
+    geom_density()
+```
+
+
+```{r airline_transformation}
+# transformation
+bc_passengers <- caret::BoxCoxTrans(airline$passengers)
+
+bc_passengers$lambda
+# you could also use 1/4
+
+airline <- airline %>% 
+    mutate(fpass = log(passengers))
+```
+
+
+```{r airline_transformation_autoplot}
+autoplot(ts(airline$fpass, start = c(1974, 1), frequency = 12))
+```
+
+```{r airline_transformed_ts}
+airline_ts <- as.xts(ts(airline$passengers, start=c(1974, 1), frequency = 12))
+```
+
+
+
+```{r plot_airline_transformation}
+plot.xts(
+    airline_ts,
+    main = 'Visits overseas'
+)
+
+plot.xts(
+    log(airline_ts),
+    main = 'Log Visits overseas'
+)
+
+plot.xts(
+    sqrt(airline_ts),
+    main = 'Sqrt Visits overseas'
+)
+```
+
+## Moving Averages
+
+$$
+Y_t = \frac{1}{11} (X_{t-5} + \ldots + X_t + \ldots + X_{t+5})
+$$
+
+This transformation has the effect of reducing the standard deviation of the irregular component, hence producing a less jagged plot. This process of noise reduction is called **smoothing**
+
+More generally:
+
+
+$$
+MA(t) = \frac{1}{2q+1} (X_{t-q} + \ldots + X_t + \ldots + X_{t+q})
+$$
+
+Moving averages of order 5 and 31 on the Central England temperatures
+
+```{r cet_ma3, fig.width = 13, fig.height = 8}
+cet_df %>% 
+    mutate(
+        ma5 = forecast::ma(temperature, order = 5),
+        ma31 = forecast::ma(temperature, order = 31)
+    ) %>% 
+    pivot_longer(c(temperature, ma5, ma31), names_to = 'series', values_to = 'temperature') %>% 
+    ggplot(aes(index, temperature)) +
+    geom_line() +
+    scale_x_date(date_breaks = '50 years', date_labels = '%Y') +
+    scale_y_continuous(limits = c(7, 11)) +
+    labs(x = NULL, y = 'Average yearly temperature (C)') +
+    facet_wrap(~series, ncol = 1)
+
+```
+
+## Estimating the Seasonal Component
+
+We do this using a **weighted moving average**
+
+For example a quarterly time series $X_t$ would use the following transformation:
+
+$$
+SA(t) = \frac{1}{4}(0.5 X_{t-2} + X_{t-1}  + X_t + X_{t+1} + 0.5 X_{t+2})
+$$
+
+There are five components, but the two quarters at either end are given half the weight which results in a moving average of order 4.
+
+A monthly transformation would be
+
+$$
+SA(t) = \frac{1}{12}(0.5 X_{t-6} + X_{t-5} + \ldots + X_t + \ldots + X_{t+5} + 0.5 X_{t+6})
+$$
+
+and this ensures that each month is equally weighted.
+
+Since the seasonal factors add up to zero over a seasonal cycle, when applied to an additive time series with seasonal component $s_t$, the transformations `SA(4)` and `SA(12)` give the same result as they would if there were no seasonal component.
+
+Thus these transformations remove the seasonal effect.
+
+
+### Visits overseas: smoothing out the seasonal component
+
+```{r ips_ma12}
+caret::BoxCoxTrans(ips_df$passengers)$lambda
+
+ips2 <- ips_df %>% 
+    mutate(passengers = sqrt(passengers)) %>% 
+    select(-year)
+
+c(start_week, end_week) %<-% range(ips2$index)
+w_breaks <- seq(start_week, length.out = 6, by = '5 years')
+
+ips2 <- ips2 %>% 
+    mutate(trend = as.double(forecast::ma(passengers, order = 12, centre = TRUE)))
+
+ips2 %>% 
+    pivot_longer(c(passengers, trend), names_to = 'series', values_to = 'passengers') %>% 
+    ggplot(aes(index, passengers)) +
+    geom_line() +
+    scale_x_date(
+        breaks = w_breaks,
+        date_label = '%Y'
+    ) +
+    facet_wrap(~series, ncol = 1)
+
+```
+
+The seasonal variation has been smoothed out of the series, leaving the (smoothed) underlying trend and some irregular variation from month to month.
+
+```{r ips_remove_trend}
+ips2 <- ips2 %>% 
+    mutate(differences = passengers - trend)
+
+ips2 %>% 
+    ggplot(aes(index, differences)) +
+    geom_line() +
+    scale_x_date(
+        breaks = w_breaks,
+        date_label = '%Y'
+    ) +
+    scale_y_continuous(limits = c(-20, 20)) +
+    labs(x = NULL)
+```
+
+The trend has been removed, leaving the series
+
+$$
+y_t = s_t + \tilde w_t
+$$
+
+The irregular component is apparent from the slight variation in the width of the seasonal fluctuations. In order to estimate the seasonal component of the original time series, this remaining irregular variation must be removed
+
+### Seasonal Factors
+
+The raw seasonal factor for January is
+
+$$
+F_{january} = \frac{sum \space of \space the \space values \space y_t \space for \space January}{number \space of \space January  \space values}
+$$
+
+```{r ips_raw_seasonal_factors}
+seasonal_factors <- ips2 %>%
+    mutate(
+        month = as.integer(month(index))
+    ) %>% 
+    group_by(month) %>% 
+    summarise(raw_factor = sum(differences, na.rm = TRUE)/n()) %>% 
+    ungroup() %>% 
+    mutate(seasonal_factor = raw_factor - mean(raw_factor))
+
+seasonal_factors
+```
+
+And these should sum to zero over one seasonal cycle
+
+```{r summarise_raw_seasonal_factors}
+seasonal_factors %>% 
+    summarise(sum = round(sum(seasonal_factor), 2))
+```
+
+
+```{r ips_decomposition}
+ips_ts <- ts(ips2$passengers, start=c(1980, 1), frequency = 12)
+
+ips_decom <- stats::decompose(ips_ts, type = 'additive')
+# seasonal factors
+seasonal_factors <- tibble(
+    month = 1:12,
+    factor = ips_decom$seasonal[1:12]
+)
+seasonal_factors
+```
+
+These represent the estimated average seasonal departures from the underlying trend. The largest value is positive and corresponds to the month of August; the smallest value is negative and corresponds to December. These estimated seasonal factors show that the series peaks in August and is lowest in December. 
+
+The estimated seasonal component of the time series comprises the estimated seasonal factors repeated over successive periods
+
+```{r ips_seasonal_factors}
+
+ips2 <- ips2 %>% 
+    mutate(seasonal = rep(seasonal_factors$factor, 25))
+
+ips2 %>% 
+    ggplot(aes(index, seasonal)) +
+    geom_line() +
+    scale_x_date(
+        breaks = w_breaks,
+        date_labels = '%Y'
+    ) +
+    scale_y_continuous(limits = c(-20, 20))
+```
+
+
+### Seasonally adjusted series
+
+
+```{r ips_seasonally_adjusted}
+ips2 <- ips2 %>% 
+    mutate(adjusted = passengers - seasonal)
+
+ips2 %>% 
+    select(-passengers, -differences, -seasonal) %>% 
+    pivot_longer(c(adjusted, trend), names_to = 'series', values_to = 'passengers') %>% 
+    ggplot(aes(index, passengers)) +
+    geom_line() +
+    scale_x_date(
+        breaks = w_breaks,
+        date_labels = '%Y'
+    ) +
+    facet_wrap(~series, ncol = 1)
+```
+
+The irregular component is obtained by subtracting the estimated trend component from the seasonally adjusted series
+
+```{r ips_irregular}
+ips2 <- ips2 %>% 
+    mutate(irregular = adjusted - trend)
+ips2 %>% 
+    ggplot(aes(index, irregular)) +
+    geom_line() +
+    scale_x_date(
+        breaks = w_breaks,
+        date_labels = '%Y'
+    ) +
+    scale_y_continuous(limits = c(-5, 5)) +
+    labs(x = NULL)
+```
+
+```{r ips_full, fig.height = 7}
+plot(ips_decom)
+```
+
