@@ -1,0 +1,259 @@
+---
+title: "Time Series: Forecasting Retail Sales"
+output: html_document
+editor_options: 
+    chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    dpi = 100,
+    fig.width = 12,
+    fig.height = 6,
+    message = F,
+    error = F,
+    warning = F,
+    cache = F
+)
+options(digits=6)
+library(tidyverse)
+library(lubridate)
+# forecasting in principles and practice
+library(fpp2)
+library(zeallot)
+
+date_rotation <- ggExtra::rotateTextX(angle = 45, vjust = 1, hjust = 1)
+
+```
+
+## Advance Retail Sales
+
+
+Monthly retails sales from 1992 to end of 2020
+
+Downloaded monthly retails sales from [here](https://fred.stlouisfed.org/series/RSXFSN)
+
+Download the retail price index [here](https://fred.stlouisfed.org/series/CPIAUCSL)
+
+```{r load_retail_sales}
+retail_sales <- read_csv(
+    '../data/retail_sales.csv',
+    col_types = cols(
+        DATE = col_date(format='%Y-%m-%d'),
+        RSXFSN = col_integer()
+    )
+) %>% rename(date = DATE, sales = RSXFSN)
+```
+
+
+```{r load_consumer_price_index}
+consumer_price_index <- read_csv(
+    '../data/consumer_price_index.csv',
+    col_types = cols(
+        DATE = col_date(format='%Y-%m-%d')
+    )
+) %>% rename(date = DATE, cpi = CPIAUCSL)
+```
+
+
+```{r combine_retail_sales_and_consumer_prices}
+retail_sales <- retail_sales %>% 
+    inner_join(consumer_price_index, by = 'date') %>% 
+    # exclude 2020 - do not have a complete year
+    filter(year(date) < 2020)
+```
+
+```{r adjust_for_inflation}
+# convert consumer price index so its relative to our last date value
+latest_index <- as.numeric(retail_sales[nrow(retail_sales), 'cpi'])
+
+retail_sales <- retail_sales %>% 
+    mutate(
+        index = cpi/latest_index,
+        # get sales in current terms
+        real = sales/index
+    )
+```
+
+```{r compute_daily_sales_adjusted_for_length_of_month}
+# get the number of days in each month
+retail_sales <- retail_sales %>% 
+    mutate(
+        next_month = date + months(1),
+        # number of days in each month
+        days = as.integer(next_month - date),
+        # number of sales per day in current terms
+        daily_sales = real / days
+    ) %>% 
+    select(-next_month)
+retail_sales
+```
+
+
+```{r retail_sales_cleanup}
+rm(consumer_price_index, latest_index)
+```
+
+Our forecasts are in sales per day
+
+```{r retail_sales_ts}
+retail_ts <- ts(
+    # the variable we want to forecast
+    retail_sales$daily_sales,
+    # when it starts
+    start = c(1992, 1),
+    # monthly
+    frequency = 12
+)
+```
+
+Preliminary analysis
+
+```{r retail_sales_timeplot}
+c(start, end) %<-% range(retail_sales$date)
+num_years <- nrow(retail_sales) / 12
+# make a sequence of years for our x-axis. 1992 - 2019 inclusive, plus one for 2020
+year_dates <- seq(start, by = 'year', length.out = num_years + 1)
+
+
+years <- seq(year(start), year(end) + 1)
+
+retail_sales %>% 
+    ggplot(aes(date, daily_sales)) +
+    geom_line() +
+    scale_x_date(
+        breaks = year_dates,
+        date_labels = '%Y',
+        minor_breaks = NULL
+    ) +
+    scale_y_continuous(
+        limits = c(7000, 17000),
+        breaks = seq(7000, 17000, 1000)
+    ) +
+    labs(x = NULL, y = 'Millions of dollars (in 2020 values)') +
+    ggtitle('Time plot: Real US Retail sales per day')
+```
+
+```{r retail_sales_autoplot}
+autoplot(retail_ts) +
+    ggtitle('Time plot: Real US Retail sales per day') +
+    labs(x = NULL, y = 'Millions of dollars (in 2020 values)')
+```
+
+
+We have a trend, despite adjusting for inflation, so we need to remove it.
+
+
+```{r retail_ts_first_difference}
+# lets look at the change in daily sales from month to month
+retail_ts_d1 <- diff(retail_ts, 1)
+autoplot(retail_ts_d1) +
+    ggtitle('Changes in daily sales') +
+    labs(x = NULL)
+
+```
+
+
+Trend appears to be stationary. We have seasonality. Is it regular?
+
+
+```{r seasonal_plot_1}
+ggseasonplot(retail_ts_d1) +
+    ggtitle('Seasonal Plot: Change in in daily retail sales')
+```
+
+
+```{r seasonal_plot_2}
+ggsubseriesplot(retail_ts_d1) +
+    ggtitle('Subseason Plot: Changes in daily retail sales')
+```
+
+
+Start with a benchmark forecast method
+
+We have a seasonally naive method:
+
+$$
+X_t = X_{t - s} + \epsilon_t
+$$
+
+
+```{r snaive_model}
+# The RMSE needs to be low
+# so we start with 305 (million dollars)
+fit_snaive <- forecast::snaive(retail_ts_d1)
+summary(fit_snaive)
+
+```
+
+```{r snaive_model_residuals}
+checkresiduals(fit_snaive)
+```
+
+
+Is it random? Is there any autocorrelation left (the ACF suggests that there is).
+
+
+Lets try an exponential smoothing model
+
+```{r ets_model}
+# this allows for a trend
+fit_ets <- forecast::ets(retail_ts)
+summary(fit_ets)
+
+```
+
+```{r ets_model_residuals}
+checkresiduals(fit_ets)
+```
+
+
+Not much improvement (looking at the ACF). Remember &alpha; = error, &beta; = trend and &gamma; = seasonality.
+
+The RMSE has dropped to 231
+
+Now try an ARIMA model. Remember this needs stationary data
+
+
+```{r arima_model}
+# select the best model with the first difference of the data
+fit_arima <- forecast::auto.arima(
+    retail_ts,
+    # take the first difference
+    d = 1,
+    # order of seasonal differencing
+    D = 1,
+    # search over all models (don't approximate)
+    stepwise = FALSE,
+    approximation = FALSE,
+    # print all the models its trying
+    trace = TRUE
+)
+summary(fit_arima)
+```
+
+
+
+```{r arima_model_residuals}
+checkresiduals(fit_arima)
+```
+
+
+The RMSE is down to 203. Looking at the ACF there is probably a model out there that will do better.
+
+For now lets use the ARIMA model
+
+
+```{r arima_forecast}
+# forecast 24 months
+fcast <- forecast(fit_arima, h = 24)
+# include the last 180 months (15 years)
+autoplot(fcast, include = 180)
+```
+
+
+```{r arima_forecast_summary}
+summary(fcast)
+```
+
