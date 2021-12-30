@@ -1,0 +1,169 @@
+---
+title: "Roots of ARMA(p, q) Models"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(digits=3)
+source('../lib/eng_maxima.R')
+```
+
+
+## Simple Example
+
+Find the root to determine if a stochastic process is stationarity, invertible or causal.
+
+General form:
+
+$$
+\phi(B) X_t = \theta(B)Z_t
+$$
+
+Where $Z_t$ is the noise and $X_t$ is our time series (the stochastic process) and `B` is the shift operator:
+
+$$
+B^j X_t = X_{t - j}
+$$
+
+For example $B X_t = X_{t-1}$ and $B^2X_t=X_{t-2}$. The same follows for $Z_t$
+
+We can now write ARMA models as polynomials, whose roots we can find. These roots determine the following properties:
+
+### Stationarity
+
+&phi; roots are **not** on the unit circle
+
+### Causality
+
+&phi; roots are **outside** the unit circle
+
+### Invertibility
+
+&theta; roots are **outside** unit circle
+
+
+## Example 1: AR(1) model
+
+
+First state the model in standard (AR) form:
+
+$$
+X_t = 0.9 X_{t-1} + Z_t
+$$
+
+Lets take a quick look at it
+
+```{r}
+arma_1 <- arima.sim(
+    model = list(
+        order = c(1, 0, 0),
+        ar = 0.9,
+        sd = sqrt(2)
+    ),
+    n = 100
+)
+
+forecast::tsdisplay(
+    arma_1,
+    main = 'ARMA(1, 0) Model with ar1=0.9'
+)
+```
+
+Now write the stochastic process as a polynomial using the backward shift operator:
+
+First put the expressions for $X_t$ and $Z_t$ on the left and right sides of the expression.
+
+$$
+X_t - 0.9 X_{t-1} = Z_t
+$$
+
+Next write it in terms of backward shift operators:
+
+$$
+(1 - 0.9B)X_t = Z_t
+$$
+
+Distribute $X_t$ to get back our previous expression. Now write the characteristic functions for &phi; and &theta;
+
+$$
+\phi(z) = 1-0.9z \\
+\theta(z) = 1
+$$
+
+
+Now we can find the roots of `z`. There are no roots for &theta;, so the time series is **invertible**.
+
+Next we solve for &phi;
+
+```{maxima maxima_1, echo = FALSE}
+fz: 1 - 0.9 * z = 0;
+solve(fz, z);
+```
+
+And we get `z = 10/9` or `1.1`. Since its greater than 1 we have **causality**. Since its not equal to 1 we also have **stationarity**.
+
+## Example 2: ARMA(2, 1)
+
+$$
+X_t = .75 X_{t-1} - .5625 X_{t-2} + Z_t + 1.25 Z_{t-1}
+$$
+
+Visualize it
+
+```{r arma_21}
+arma_21 <- arima.sim(
+    model = list(
+        order = c(2, 0, 1),
+        ar = c(.75, -0.5625),
+        ma = 1.25,
+        sd = sqrt(2)
+    ),
+    n = 100
+)
+
+forecast::tsdisplay(
+    arma_21,
+    main = 'ARMA(2, 1) Model with ar(.75, -.5625) ma(1.25)'
+)
+```
+
+
+Collect terms
+
+$$
+X_t - .75 X_{t-1} + .5625 X_{t-2} = Z_t + 1.25 Z_{t-1}
+$$
+
+State in terms of backshift operations
+
+$$
+(1 - .75B + .5625B^2) = (1 + 1.25)B
+$$
+
+
+Next derive the characteristic polynomials
+
+$$
+\phi(z) = 1 - .75z + .5625 z^2 = 0\\
+\theta(z) = 1 + 1.25z = 0
+$$
+
+Finally, solve for `z` and test
+
+```{maxima maxima_2, echo = FALSE}
+tz: 1 + 1.25*z = 0;
+pz: 1 - .75*z + .5625*z^2 = 0;
+tsol: solution(tz, z);
+psol: solution(pz, z);
+psol: rectform(psol);
+abs(psol);
+```
+
+So we get $\theta(z) = -4/5$ or $\theta(z) = -0.8$.
+
+This is less then -1 so its inside the unit circle an so the series is **not** invertible.
+
+$\phi(z) = 4/3$. This is not equal to one, so we have *stationarity* and because its greater than one it is also *causal*.
+
+
