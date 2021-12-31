@@ -1,0 +1,47 @@
+---
+title: "Multiple Timeseries"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+
+## Multiple time series
+
+When we have two or more time series measured over the same period, the question naturally arises as to whether or not the ups and downs of the different series are correlated. It may be that we suspect that change in one of the variables causes changes in the other (e.g. changes in the number of predators may cause changes in the number of prey, because more predators means more prey eaten).
+
+We need to be careful, of course, because it will not always be obvious which way round the causal relationship might work (e.g. predator numbers may go up because prey numbers are higher; ecologists call this a numerical response). Suppose we have the following sets of counts:
+
+```{r rwoseries_load}
+twoseries <- read_tsv(
+    '../data/twoseries.tsv',
+    col_types = cols(
+        x = col_integer(),
+        y = col_integer()
+    )
+) %>% mutate(index = row_number())
+
+```
+
+
+```{r twoseries_plot, fig.height = 6}
+twoseries %>% 
+    select(x, y) %>% 
+    plot.ts(main = '')
+```
+
+There is some evidence of periodicity (at least in x) and it looks as if y lags behind x by roughly 2 periods (sometimes 1).
+
+Now let us carry out straightforward analyses on each time series separately and the cross- correlation between the two series:
+
+
+```{r multiple_ts_acf, fig.height = 8}
+twoseries %>% 
+    select(x, y) %>% 
+    acf(type = 'p', col = 'red')
+```
+
+As we suspected, the evidence for periodicity is stronger in x than in y: the partial autocorrelation is significant and negative at lag 2 for x, but not for y. The interesting point is the cross-correlation between x and y which is significant at lags 1 and 2 (top right). Positive changes in x are associated with negative changes in y and vice versa.

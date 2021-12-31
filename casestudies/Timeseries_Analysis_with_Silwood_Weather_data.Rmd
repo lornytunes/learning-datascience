@@ -1,0 +1,305 @@
+---
+title: "Time Series Analysis with Silwood Weather data"
+output: html_document
+editor_options: 
+    chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    dpi = 100,
+    fig.width = 12,
+    fig.height = 6,
+    message = F,
+    error = F,
+    warning = F,
+    cache = F
+)
+library(tidyverse)
+```
+
+
+## Seasonal Data
+
+Many time series applications involve data that exhibit seasonal cycles. The commonest applications involve weather data. Here are daily maximum and minimum temperatures from Silwood Park in south-east England over a 19-year period from the 1st of January 1987
+
+```{r load_silwood_weather}
+weather_df <- read_tsv(
+    '../data/silwood_weather.tsv',
+    col_types = cols(
+        month = col_integer(),
+        year = col_integer()
+    )
+)
+```
+
+```{r silwood_weather_etl}
+weather_df <- weather_df %>% 
+    mutate(
+        index = seq(make_date(1987, 1, 1), length.out = nrow(weather_df), by = 'day')
+    ) %>% 
+    select(index, year, month, upper, lower, rain)
+```
+
+
+
+```{r silwood_weather_first_and_last_dates}
+# first and last dates
+weather_df %>% 
+    slice(1, nrow(weather_df))
+```
+
+
+```{r silwood_temperature_plot}
+year_breaks <- seq(min(weather_df$index), by='years', length=20)
+weather_df %>% 
+    ggplot(aes(index, upper)) +
+    geom_line() +
+    scale_y_continuous(limits = c(-10, 40)) +
+    scale_x_date(
+        labels = scales::date_format("%Y"),
+        breaks = year_breaks
+    ) +
+    labs(x = NULL, y = 'Temperture (celcius)') +
+    ggtitle('Daily maximum temperatures')
+```
+
+The seasonal pattern of temperature change is clear, but there is no clear trend (e.g. warming). Note that the x axis is labelled by the day number of the time series (‘Index’). We start by modelling the seasonal component.
+
+The simplest models for cycles are scaled so that a complete annual cycle is of length 1.0 (rather than 365 days).
+
+Our series consists of 6940 days over a 19-year span, so we write:
+
+
+```{r silwood_time_span}
+cycle_length <- nrow(weather_df) / 19
+weather_df <- weather_df %>% 
+    mutate(
+        time = row_number() / cycle_length
+    )
+
+```
+
+
+The equation for the seasonal cycle is:
+
+$$
+y = \alpha + \beta sin(2\pi t) + \gamma cos(2 \pi t) + \epsilon
+$$
+
+This is a linear model, so we can estimate its three parameters very simply:
+
+
+```{r silwood_model}
+model <- lm(upper ~ sin(time * 2 * pi) + cos(time * 2 * pi), data = weather_df)
+summary(model)
+```
+
+The parameters are all significant
+
+```{r silwood_model_add_predictions}
+weather_fitted <- weather_df %>% 
+    modelr::add_predictions(model) %>% 
+    modelr::add_residuals(model)
+```
+
+
+
+```{r silwood_model_plot}
+weather_fitted %>% 
+    ggplot(aes(x = time)) +
+    geom_point(aes(y = upper), size = 0.5, alpha = 0.3) +
+    geom_line(aes(y = pred), colour = 'darkred') +
+    scale_y_continuous(limits = c(-10, 40)) +
+    scale_x_continuous(limits = c(0, 19), breaks = seq(0, 19, 1))
+```
+
+```{r silwood_model_residuals}
+weather_fitted %>% 
+    ggplot(aes(time, resid)) +
+    geom_point(size = 0.5, alpha = 0.3) +
+    scale_x_continuous(limits = c(0, 19), breaks = seq(0, 19, 1))
+```
+
+
+There looks to be some periodicity in the residuals, but no obvious trends. To look for serial correlation in the residuals, we use the `acf` function like this:
+
+
+```{r silwood_acf}
+acf(weather_fitted$resid, main = '')
+```
+
+```{r silwood_pacf}
+acf(weather_fitted$resid, main = '', type = 'p')
+```
+
+There is very strong serial correlation in the residuals, and this drops off roughly exponentially with increasing lag (left-hand graph).
+
+The partial autocorrelation at lag 1 is very large (0.7317), but the correlations at higher lags are much smaller.
+
+This suggests that an AR(1) model (autoregressive model with order 1) might be appropriate. This is the statistical justification behind the old joke about the weather forecaster who was asked what tomorrow’s weather would be. ‘Like today’s’, he said.
+
+### Pattern in the monthly means
+
+The monthly average upper temperatures show a beautiful seasonal pattern when analysed by `acf`
+
+
+```{r silwood_monthly_means}
+monthly_means <- weather_df %>% 
+    group_by(year, month) %>% 
+    summarise_at(vars(upper, lower, rain), mean)
+monthly_ts <- monthly_means %>% 
+    pull(upper) %>% 
+    ts(start = c(1987, 1), frequency = 1)
+```
+
+
+```{r silwood_monthly_means_acf_plot}
+forecast::ggAcf(monthly_ts) +
+    scale_x_continuous(breaks = 0:25) +
+    scale_y_continuous(limits = c(-1, 1))
+```
+
+There is a perfect cycle with period 12 (as expected). What about patterns across years?
+
+```{r silwood_year}
+year_ts <- weather_df %>% 
+    group_by(year) %>% 
+    summarise_at(vars(upper, lower, rain), mean) %>% 
+    pull(upper) %>% 
+    ts(start = c(1987, 1), frequency = 1)
+```
+
+```{r silwood_year_acf_plot}
+forecast::ggAcf(year_ts) +
+    scale_x_continuous(breaks = 0:25) +
+    scale_y_continuous(limits = c(-1, 1))
+```
+
+
+Nothing! The pattern you may (or may not) see depends upon the scale at which you look for it. As for spatial patterns (Chapter 26), so it is with temporal patterns. There is strong pattern between days within months (tomorrow will be like today).
+
+There is very strong pattern from month to month within years (January is cold, July is warm).
+
+But there is no pattern at all from year to year (there may be progressive global warming, but it is not apparent within this recent time series (see below), and there is absolutely no evidence for untrended serial correlation).
+
+
+## Built-in time series functions
+
+The analysis is simpler, and the graphics are better labelled, if we convert the temperature data into a regular time series object using ts.
+
+We need to specify the first date (January 1987) as `start=c(1987,1)`, and the number of data points per year as `frequency=365`.
+
+
+```{r silwood_ts}
+weather_ts <- weather_df %>% 
+    pull(upper) %>% 
+    ts(start = c(1987, 1), frequency = 365)
+plot(weather_ts)
+
+```
+
+```{r silwood_dates, error=TRUE}
+weather_df <- weather_df %>% 
+    add_column(date = seq.Date(make_date(1987, 1, 1), length.out = nrow(weather_df), by = 'day')) %>% 
+    select(-year, -month)
+
+weather_df %>% 
+    ggplot(aes(date, upper)) +
+    geom_line() +
+    scale_y_continuous(limits = c(-10, 40)) +
+    scale_x_date(
+        date_breaks = '1 year',
+        date_labels = '%Y'
+    ) +
+    labs(x = NULL, y = 'Temperature (celsius)')
+```
+
+## Decompositions
+
+
+```{r silwood_components, fig.height = 8}
+weather_components <- stl(weather_ts, 'periodic')
+plot(weather_components)
+```
+
+
+
+The remainder component is the residuals from the seasonal plus trend fit. The bars at the right-hand side are of equal heights (in user coordinates).
+
+## Testing for a trend
+
+
+It is important to know whether these data provide any evidence for global warming. The trend part of the figure indicates a fluctuating increase, but is it significant? The mean temperature in the last 9 years was 0.71◦ C higher than in the first 10 years:
+
+
+```{r silwood_trend}
+
+weather_df <- weather_df %>% 
+    mutate(
+        year = year(date),
+        recent = year > 1996
+    )
+    
+
+weather_df %>% 
+    group_by(recent) %>% 
+    summarise(mean = mean(upper))
+```
+
+We cannot test for a trend with linear regression because of the massive temporal pseudoreplication. Suppose we tried this:
+
+
+```{r silwood_model_pseudo_replication}
+model1 <- lm(
+    upper ~ index + sin(time * 2 * pi) + cos(time * 2 * pi),
+    data = weather_df
+)
+summary(model1)
+num_days <- nrow(weather_df)
+warming_coef <- round(1.807/10^4, 6)
+predicted_increase <- round(num_days * warming_coef, 3)
+```
+
+It would suggest (wrongly, as we shall see) that the warming was highly significant (index p value less than `2 × 10–16` for a slope of `r warming_coef` degrees of warming per day, leading to a predicted increase in mean temperature of `r predicted_increase` C over the `r num_days` days of the time series).
+
+
+Since there is so much temporal pseudoreplication we should use a mixed model, and because we intend to compare two models with different fixed effects we use the method of maximum likelihood `(REML=FALSE)`.
+
+The explanatory variable for any trend is index, and we fit the model with and without this variable, allowing for different intercepts for the different years as a random effect:
+
+
+```{r silwood_model_mixed}
+model2 <- lme4::lmer(
+    upper ~ index+sin(time*2*pi)+cos(time*2*pi) + (1 | year),
+    REML = FALSE,
+    data = weather_df
+)
+model3 <- lme4::lmer(
+    upper ~ sin(time*2*pi)+cos(time*2*pi) + (1 | year),
+    REML = FALSE,
+    data = weather_df
+)
+anova(model2, model3)
+```
+
+
+Clearly, the trend is non-significant (chi-squared = 0.9, p = 0.3228).
+
+If you are prepared to ignore all the variation (from day to day and from month to month), then you can get rid of the pseudoreplication by averaging and test for trend in the yearly mean values: these show a significant trend if the first year (1993) is included, but not if it is omitted:
+
+
+```{r}
+yearly_means <- weather_df %>% 
+    mutate(year = year(date)) %>% 
+    group_by(year) %>% 
+    summarise(upper = mean(upper), .groups = 'drop_last')
+
+model4 <- lm(upper ~ I(1:19), data = yearly_means)
+summary(model4)
+model5 <- lm(upper ~ I(1:18), data = yearly_means %>% filter(year > 1987))
+summary(model5)
+```
+
+Obviously, you need to be circumspect when interpreting trends in time series.
