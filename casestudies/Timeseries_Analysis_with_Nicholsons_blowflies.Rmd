@@ -1,0 +1,198 @@
+---
+title: "Time Series Analysis with Nicholson's blowflies"
+output: html_document
+editor_options: 
+    chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    dpi = 100,
+    fig.width = 12,
+    fig.height = 6,
+    message = F,
+    error = F,
+    warning = F,
+    cache = F
+)
+library(tidyverse)
+```
+
+## Nicholson's blowflies
+
+
+The Australian ecologist, A.J. Nicholson, reared blowfly larvae on pieces of liver in laboratory cultures that his technicians kept running continuously for almost 7 years (361 weeks, to be exact).
+
+The time series for numbers of adult flies looks like this:
+
+
+```{r blowfly_ts}
+flies_df <- read_table(
+    '../data/blowfly.txt',
+    col_types = cols(
+        flies = col_integer()
+    )
+) %>% 
+    mutate(week = row_number()) %>% 
+    select(week, flies)
+
+flies_ts <- flies_df %>% 
+    pull(flies) %>% 
+    ts()
+```
+
+
+```{r blowfly_ts_plot}
+forecast::tsdisplay(flies_ts, main = 'Blowfly population')
+```
+
+
+This classic time series has two clear features:
+
+- For the first 200 weeks the system exhibits beautifully regular cycles.
+- After week 200 things change (perhaps a genetic mutation had arisen); the cycles become much less clear-cut, and the population begins a pronounced upward trend.
+
+
+There are two important ideas to understand in time series analysis: __autocorrelation__ and __partial autocorrelation__.
+
+The first describes how this week's population is related to last week's population. This is the autocorrelation at lag 1.
+
+The second describes the relationship between this week's population and the population at lag t once we have controlled for the correlations between all of the successive weeks between this week and week t.
+
+This should become clear if we draw the scatterplots from which the first four autocorrelation terms are calculated (lag 1 to lag 4).
+
+
+```{r blowfly_lag_glimpse}
+flies_ts[1:10]
+lag(flies_ts[1:10], 1)
+lag(flies_ts[1:10], 2)
+```
+
+
+
+```{r lag_plots, fig.height = 8}
+flies_df %>% 
+    mutate(
+        lag_1 = lag(flies, 1),
+        lag_2 = lag(flies, 2),
+        lag_3 = lag(flies, 3),
+        lag_4 = lag(flies, 4)
+    ) %>% 
+    pivot_longer(lag_1:lag_4, names_to = 'lag') %>% 
+    ggplot(aes(flies, value)) +
+    geom_point(alpha = 0.5, colour = 'darkred') +
+    labs(x='Population size', y=NULL) +
+    facet_wrap(~lag, ncol = 2)
+```
+
+The correlation is very strong at lag 1, but notice how the variance increases with population size: small populations this week are invariably correlated with small populations next week, but large populations this week may be associated with large or small populations next week.
+
+The striking pattern here is the way that the correlation fades away as the size of the lag increases.
+
+Because the population is cyclic, the correlation goes to zero, then becomes weakly negative and then becomes strongly negative. This occurs at lags that are half the cycle length. Looking back at the time series, the cycles look to be about 20 weeks in length. So let us repeat the exercise by producing scatterplots at lags of 7, 8, 9 and 10 weeks:
+
+
+```{r lag_plots_2, fig.height = 8}
+flies_df %>% 
+    mutate(
+        lag_07 = lag(flies, 7),
+        lag_08 = lag(flies, 8),
+        lag_09 = lag(flies, 9),
+        lag_10 = lag(flies, 10)
+    ) %>% 
+    pivot_longer(lag_07:lag_10, names_to = 'lag') %>% 
+    ggplot(aes(flies, value)) +
+    geom_point(alpha = 0.5, colour = 'darkred') +
+    geom_smooth(method = lm, se = FALSE, linetype = 'dashed') +
+    facet_wrap(~lag, ncol = 2)
+```
+
+The negative correlation at lag 10 gradually emerges from the fog of no correlation at lag 7
+
+More formally, the autocorrelation function ρ(k) at lag k is
+
+$$
+\rho(k) = \frac{y(k)}{y(0)}
+$$
+where $γ(k)$ is the autocovariance function at lag k of a stationary random function ${Y(t)}$ given by
+
+
+$$
+y(k) = cov(Y(t), Y(t-k))
+$$
+
+The most important properties of the autocorrelation coefficient are as follows:
+
+- They are symmetric backwards and forwards, so $\rho(k) = \rho(−k)$.
+- The limits are `−1 ≤ ρ(k) ≤ 1`.
+- When Y(t) and Y(t – k) are independent, then $\rho(k) = 0$.
+- The converse of this is not true, so that $\rho(k) = 0$ does not imply that $Y(t)$ and $Y(t – k)$ are independent (look at the scatterplot for `k = 7` in the scatterplots above).
+
+A first-order autoregressive process is written as
+
+$$
+Y_t = \alpha Y_{t-1} + Z_t
+$$
+
+
+This says that this week’s population is $\alpha$ times last week’s population plus a random term $Z_t$.
+
+The randomness is white noise; the values of Z are serially independent, they have a mean of zero, and they have finite variance $\sigma^2$.
+
+
+__Partial autocorrelation__ is the relationship between this week’s population and the population at lag t when we have controlled for the correlations between all of the successive weeks between this week and week t.
+
+
+
+```{r blowfly_acf}
+vals <- forecast::Acf(flies_ts, plot = FALSE)
+forecast::ggAcf(flies_ts) +
+    scale_x_continuous(breaks = 0:25, minor_breaks = NULL, expand = c(0.05, 0.05)) +
+    scale_y_continuous(limits = c(-0.5, 1))
+```
+
+You will not see more convincing evidence of cycles than this. The blowflies exhibit highly significant, regular cycles with a period of 19 weeks. The blue dashed lines indicate the threshold values for significant correlation. What kind of time lags are involved in the generation of these cycles? We use partial autocorrelation (type="p") to find this out:
+
+```{r blowfly_pacf}
+forecast::ggPacf(flies_ts) +
+    scale_x_continuous(breaks = 0:25, minor_breaks = NULL) +
+    scale_y_continuous(limits = c(-0.5, 1))
+```
+
+The significant density-dependent effects are manifest at lags of 2 and 3 weeks, with other, marginally significant negative effects at lags of 4 and 5 weeks. These lags reflect the duration of the larval and pupal period (1 and 2 periods, respectively). The cycles are clearly caused by overcompensating density dependence, resulting from intraspecific competition between the larvae for food (what Nicholson christened ‘scramble competition’).
+
+There is a curious positive feedback at a lag of 12 weeks (12–16 weeks, in fact). Perhaps you can think of a possible cause for this?
+
+We should investigate the behaviour of the second half of the time series separately. Let us say it is from week 201 onwards:
+
+
+```{r}
+second <- flies_ts[201:361]
+```
+
+Now test for a linear trend in mean fly numbers against day number, from 1 to `length(second)`:
+
+
+```{r blowfly_second}
+# I means 'as is'. The colon is used to generate
+# a sequence of x values and not an interaction term
+lm_second <- lm(second~I(1:length(second)))
+summary(lm_second)
+```
+
+This shows that there is a highly significant upward trend of about 22 extra flies on average each week in the second half of time series. We can detrend the data by subtracting the fitted values from the linear regression of second on day number:
+
+
+```{r blowfly_detrended}
+detrended <- second - predict(lm_second)
+forecast::tsdisplay(detrended)
+```
+
+There are still cycles there, but they are weaker and less regular.
+
+There are still significant negative partial autocorrelations at lags 3 and 5, but now there is a curious extra negative partial at lag 18. It looks, therefore, as if the main features of the ecology are the same (scramble competition for food between the larvae, leading to negative partials at 3 and 5 weeks after 1 and 2 generation lags), but population size is drifting upwards and the cycles are showing a tendency to dampen out.
+
+## Moving Averages
+
+The simplest way of seeing pattern in time series data is to plot the moving average. A useful summary statistic is the three-point moving average:
