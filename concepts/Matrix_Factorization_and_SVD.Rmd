@@ -81,9 +81,9 @@ m2
 
 ## Dependencies
 
-### Similar users
+Similar users
 
-```{r}
+```{r similar_users}
 # similar users
 m2 %>% 
     slice(c(1, 3))
@@ -91,26 +91,27 @@ m2 %>%
 
 ### Similar Movies
 
-```{r}
+```{r similar_movies}
 # similar movies
 m2 %>% 
     select(M1, M4)
 ```
 
 
-### Dependent users
+Dependent users
 
-```{r}
+```{r independent_users_1}
 m2 %>% 
     slice(2:4)
 ```
 
 
-```{r}
+```{r dependent_users_2}
 r2 <- m2 %>% 
     select(-User) %>% 
     data.matrix()
 rownames(r2) <- m2$User
+r2
 # sum rows 2 and 3 gives 4
 apply(r2[2:3,], 2, FUN = sum)
 
@@ -118,10 +119,9 @@ apply(r2[2:3,], 2, FUN = sum)
 
 For example Betty loves action, carlos loves comedy and dana loves action and comedy
 
+Dependent movies
 
-### Dependent movies
-
-```{r}
+```{r dependent_movies}
 m2 %>% 
     select(M2, M3, M5)
 ```
@@ -165,7 +165,7 @@ Matrix factorization is used to figure out these dependencies
 
 Lets see how to find the two smaller matrices that generated `ratings`.
 
-```{r}
+```{r view_ratings}
 ratings
 ```
 
@@ -187,26 +187,31 @@ features <- c('Comedy', 'Action')
 # so the predicted ratings for mall cop would be the dot product
 ana %*% t(mall_cop)
 betty %*% t(mall_cop)
-dana %*% t(sharknado)
-
+dana %*% t(mall_cop)
+# similar operations for sharknado
 ```
+These are easier with matrices
 
-## Movie features
+## Features
 
-```{r movie_and_user_features}
+```{r movie_features}
 movie_features <- tibble(
     movie = colnames(m2)[-1],
     comedy = c(3, 1,1, 3, 1),
     action = c(1, 2, 4, 1, 3)
 )
+movie_features
+```
+
+```{r user_features}
 user_features <- tibble(
     user = ratings$User,
     comedy = c(1, 0, 1, 1),
     action = c(0, 1, 0, 1)
 )
-movie_features
 user_features
 ```
+
 
 Take the dot products
 
@@ -257,12 +262,19 @@ movies_m[1:4, 1:3]
 movies_m[5:7, 4:5]
 ```
 
-SVD Factorisation: $A = U \Sigma V^T$
+SVD Factorisation
 
-```{r movies_svd}
-options(digits = 3)
+$$
+A = U \Sigma V^T
+$$
+```{r movies_rank}
 # the rank is 3, so we should get 3 concepts
 qr(movies_m)$rank
+```
+
+
+
+```{r movies_svd}
 movies_svd <- svd(movies_m, nu = 3, nv = 3)
 concepts <- c('SciFi', 'Romance', 'Other')
 # left singular vectors. users -> concepts
@@ -279,13 +291,13 @@ colnames(V) <- colnames(movies_m)
 rownames(V) <- concepts
 ```
 
-#### User to concept similarity matrix
+### User to concept similarity matrix
 
 ```{r svd_u}
 U
 ```
 
-#### Singular Values
+### Singular Values
 
 These are the strengths of each concept. The third concept is probably just noise
 
@@ -293,13 +305,11 @@ These are the strengths of each concept. The third concept is probably just nois
 D
 ```
 
-### Movie to Concept similarity matrix
+Movie to Concept similarity matrix
 
 ```{r svd_v}
 V
 ```
-
-
 
 
 ```{r confirm_factorization}
