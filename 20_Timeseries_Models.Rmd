@@ -1,0 +1,521 @@
+---
+title: "Time Series Models"
+output: html_document
+editor_options: 
+    chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    dpi = 100,
+    fig.width = 12,
+    fig.height = 6,
+    message = F,
+    error = F,
+    warning = F,
+    cache = T
+)
+
+library(tidyverse)
+library(lubridate)
+library(xts)
+library(forecast)
+library(zeallot)
+
+```
+
+## Differencing time series
+
+Start with a simple additive model: trend plus noise
+
+$$
+X_t = m_t + W_t
+$$
+
+Now replace this with the difference between $X_t$ and $X_{t-1}$
+
+$$
+Y_t = X_t - X_{t-1}
+$$
+
+Substitute our linear model to get this
+
+$$
+Y_t = (m + bt + W_t) - (m+b)(t-1) + W_{t-1} \\
+= (m + bt + W_t) - (m+bt + W_{t-1}-b) \\
+= b + W_t - W_{t-1} \\
+= b + \dot{W_t}
+$$
+
+where $\dot{W_t} = W_t - W{t-1}$. This series has a constant level (b) and an irregular component $\dot{W_t}$. This series is stationary in the mean.
+
+### Example: British Government Securities
+
+```{r load_government_securities}
+securities_df <- haven::read_sav(
+    'data/british_government_securities_1950_1971.sav'
+) %>% janitor::clean_names()
+```
+
+```{r government_securities_etl}
+securities_df <- securities_df %>% 
+    modify_at(vars(year, month), as.integer)
+
+securities_df <- securities_df %>% 
+    mutate(index = make_date(year, month)) %>% 
+    select(index, yield, -year, -month, -date)
+```
+
+
+```{r first_differences}
+securities_df <- securities_df %>% 
+    mutate(`First difference` = c(NA, diff(yield, 1)))
+```
+
+```{r government_securities_yield_plot, fig.width = 10, fig.height = 6}
+securities_df %>% 
+    ggplot(aes(index, yield)) +
+    geom_line() +
+    scale_x_date(date_breaks="2 years", date_labels = "%Y") +
+    labs(X = NULL) +
+    ggtitle('British Government securities index')
+```
+
+
+
+```{r government_securities_first_difference_plot, fig.width = 10, fig.height = 6}
+securities_df %>% 
+    ggplot(aes(index, `First difference`)) +
+    geom_line() +
+    scale_x_date(date_breaks="2 years", date_labels = "%Y") +
+    labs(x = NULL) +
+    ggtitle('British Government securities index (1st difference)')
+```
+
+
+So far it has been assumed that the original series $X_t$ has a linear trend. But what happens if the trend is curved? In that case, the series of first differences might not be stationary in mean, but it will be *less curved* than the original series. So the procedure is repeated. A third series, $Z_t$ , is obtained by taking the first differences of the $Y_t$:
+
+$$
+Z_t = Y_t - Y_{t-1} \\
+= (X_t - X_{t-1}) - (X_{t-1} - X_{t-2}) \\
+= X_t - 2 X_{t-1} + X_{t-2}
+$$
+
+The key point is that you can keep taking differences in this way until you obtain a series that is stationary in mean, and that you can do so without estimating the trend component of the original time series.
+
+### UK Production
+
+```{r uk_production_load}
+production_df <- read_csv(
+    'data/uk_production.csv',
+    col_types = cols(
+        index = col_date(format='%Y-%m-%d'),
+        production = col_double()
+    )
+)
+```
+
+
+```{r uk_production_with_second_difference_plot, fig.width=10, fig.height=8}
+production_df %>% 
+    mutate(
+        `First difference` = c(NA, diff(production, 1)),
+        `Second difference` = c(NA, diff(`First difference`, 1))
+    ) %>% 
+    pivot_longer(production:`Second difference`, names_to = 'series', values_to = 'production') %>% 
+    ggplot(aes(index, production)) +
+    geom_line() +
+    scale_x_date() +
+    labs(x = 'Quarter', y = NULL) +
+    facet_wrap(~series, nrow = 3, scales = 'free_y')
+```
+
+The series is non-seasonal, since the seasonal component has been removed by seasonal adjustment. The irregular fluctuations do not vary in size, so the series may be described using an additive model.
+
+However, the series is not stationary, as there is clear variation in the level of the series over time. An initial drop (between 1990 and 1992) is followed by a rise until about 2001, then followed by another drop. The trend is certainly not linear.
+
+This time plot suggests that the series of first differences may not be stationary in mean: after the first value, there is an increasing trend until 1993, followed by a more gradual decline. However, the variation in the level is much less marked than for the original data. Thus the first differences have reduced, but not completely removed, the trend.
+
+The time plot of the series of second differences is clearly stationary in mean. There is no systematic increase or decrease in the variance, so the series also appears to be stationary in variance.
+
+
+## Auto Regressive Models
+
+
+$$
+X_t = \sum_{i=1}^p {\alpha_i X_{t-i} + \epsilon_t}
+$$
+
+$$
+X_t = \alpha X_{t-1} + Z_t
+$$
+
+
+multiplying last year's population by $\alpha$ then adding the relevant random number from $Z_t$.
+
+An autoregressive model of order p computes $X_t$ as a function of the last p values of X, so, for a second-order process, we would use
+
+$$
+X_t = \alpha_1 X_{t-1} + \alpha_2 X_{t - 2} + \epsilon_t
+$$
+
+In many situations it is appropriate to allow for the possibility that $X_t$ might depend on previous values. A simple model allowing for this is
+
+$$
+X_t = \beta X_{t-1} + Z_t
+$$
+
+Where $\beta \neq 0$ whten there is a non-zero correlation between $X_t$ and $X_{t-1}$
+
+The autocorrelation function for the `AR(1)` model is given by
+
+$$
+\rho_k = \beta^k, k = 0, 1, 2, \dots
+$$
+
+
+### Simulating AR(1) Models
+
+
+```{r function_to_simulate_ar1_series}
+simulate_ts <- function(alpha, Z) {
+    Y <- numeric(length(Z))
+    Y[1] = Z[1]
+    for(i in 2:length(Y)) {
+        Y[i] <- alpha * Y[i - 1] + Z[i]
+    }
+    return(Y)
+}
+```
+
+
+```{r theoretical_acf_positive}
+Y <- simulate_ts(0.7, c(20, rep(0, 19)))
+forecast::tsdisplay(
+    Y,
+    main = 'AR(0.7)'
+)
+```
+
+```{r theoretical_acf_negative}
+Y <- simulate_ts(-0.7, c(20, rep(0, 19)))
+forecast::tsdisplay(Y, main = 'AR(-0.7)')
+```
+
+To see how the correlation structure of an `AR(1)` depends on the value of &alpha;, we can simulate the process over, say, 250 time periods using different values of &alpha;
+
+
+```{r ts_simulation_whitenoise}
+# generate the white noise, with standard deviation 2
+Z <- rnorm(250, 0, 2)
+forecast::tsdisplay(Z, main = 'White Noise')
+```
+
+The time series is bound to be stationary because each value of Z is independent of the value before it. The correlation at lag 0 is 1 (of course), but there is absolutely no hint of any correlations at higher lags.
+
+
+If alpha is say `-0.5` then $Y_1 = Z_1$ and $Y_2$ will be whatever $Y_1$ was times -0.5, plus $Z_2$ and so on.
+
+```{r ts_simulation_negative}
+Y <- simulate_ts(-0.5, rnorm(250, sd = 2))
+broom::tidy(forecast::Arima(Y, order = c(1, 0, 0)))
+```
+
+```{r ts_simulation_negative_plot}
+forecast::tsdisplay(Y, main = 'AR(1) p = -0.5')
+```
+
+
+The time series shows rapid return to equilibrium following random departures from it. There is a highly significant negative autocorrelation at lag 1, significant positive autocorrelation at lag 2 and so on, with the size of the correlation gradually damping away.
+
+
+```{r ts_simulation_positive}
+Y <- simulate_ts(0.5, rnorm(250, sd = 2))
+broom::tidy(forecast::Arima(Y, order = c(1, 0, 0)))
+```
+
+```{r ts_simulation_positive_plot}
+forecast::tsdisplay(Y, main = 'AR(1) p = 0.5')
+```
+
+Now the time series plot looks very different, with protracted periods spent drifting away from the long-term average. The autocorrelation plot shows significant positive correlations for the first three lags.
+
+Finally, we look at the special case of $\alpha = 1$. This means that the time series is a classic __random walk__, given by
+
+$$
+Y_t = Y_{t-1} + Z_t
+$$
+
+
+```{r}
+Y <- simulate_ts(1, rnorm(250, 0, 2))
+forecast::tsdisplay(Y, main = 'AR(1) p = 1 (Random Walk)')
+```
+
+
+The time series wanders about and strays far away from the long-term average. The acf plot shows positive correlations dying away very slowly, and still highly significant at lags of more than 20. Of course, if you do another realization of the process, the time series will look very different, but the autocorrelations will be similar.
+
+## Moving Average Models
+
+This is a family of models for stationary time series that can be used to represent short-term dependence
+
+$$
+X_t = \sum_{j=0}^q {\beta_j \epsilon_{t - j}}
+$$
+
+A moving average of order q averages the random variation over the last q time periods
+
+### Moving average model of order 1
+
+Let $X_t$ denomte a stationary time series with zero mean.
+
+A model is required that can be used to represent **short-term** dependence between successive terms.
+
+$$
+X_t = Z_t
+$$
+
+Where $Z_t$ is a stationary time series of uncorrelated terms with mean zero and variance $\sigma^2$.
+
+The ACF for this model is zero at all lags so for this model there is no depencence at all between terms in the time series.
+
+Now consider this model
+
+$$
+X_t = Z_t - \theta Z_{t-1}
+$$
+
+Apply this model at time `t-1`
+
+
+$$
+X_{t-1} = Z_{t-1} - \theta Z_{t-2}
+$$
+
+Since $Z_{t-1}$ occurs in both the expression for $X_t$ and for $X_{t-1}$ there is a non-zero correlation between $X_t$ and $X_{t-1}$
+
+Now apply it at $X_{t-2}$
+
+$$
+X_{t-2} = Z_{t-2} - \theta Z_{t-3}
+$$
+
+And the expression for $X_{t-2}$ does not share any terms with the expresion for $X_t$. Since the terms in $Z_t$ are uncorrelated this means that the correlation between $X_t$ and $X_{t-2}$ is zero for all $k \geq 2$
+
+Thus the series $X_t$ exhibits non-zero dependence only at lag 1 and hence the dependence is short term.
+
+
+### Example: Variation in yield of Government securities
+
+This is a time series of monthly changes in the yield of British Government securities; increases in yield are positive, decreases are negative.
+
+This time series comprises the first differences of the time series of monthly yields
+
+
+```{r securities_ts}
+# create time series
+securities_ts <- securities_df %>% 
+    pull(yield) %>% 
+    xts(order.by = securities_df$index)
+securities_ts <- diff(securities_ts, 1)
+```
+
+```{r securities_ts_first_difference_plot}
+forecast::tsdisplay(
+    securities_ts,
+    main = 'British Government Security yields - 1950 to 1970'
+)
+```
+
+
+1. There is no systematic variation in the level of the series, or in the size of the fluctuations. Hence there is no reason to suggest that the time series is not stationary.
+1. The correlogram shows a single large value at lag 1, and the remaining sample autocorrelations all lie within or only just cross the significance bounds. Furthermore, the partial correlogram shows an alternating pattern which is within the significance bounds for larger lags. So the suggestion that an `MA(1)` model is appropriate is reasonable.
+1. The alternating values of the PACF suggests that the value of &theta; is negative.
+
+
+### Fitting the MA(1) model
+
+```{r fitting_ma1_model}
+model_ma1 <- forecast::Arima(securities_ts, order = c(0, 0, 1))
+mean(securities_ts, na.rm = TRUE)
+summary(model_ma1)
+```
+
+## Integrated Autoregressive moving average (ARIMA) models
+
+### Yield on British Government Securities
+
+```{r securities_plot}
+c(start_year, end_year) %<-% range(year(securities_df$index))
+
+year_breaks <- seq(make_date(start_year), make_date(end_year + 1), by = 'year')
+securities_df %>% 
+    ggplot(aes(index, yield)) +
+    geom_line() +
+    scale_x_date(
+        breaks = year_breaks,
+        date_labels = '%Y'
+    ) +
+    labs(x = NULL) +
+    ggtitle('Monthly Percentage yields on British Government securities 1950 - 1970')
+
+```
+
+This time series is clearly non-stationary. Stationarity is obtained by differencing the series once.
+
+An the autocorrelation of the first difference
+
+
+```{r securities_autocorrelation_first_difference, message=FALSE, warning=FALSE}
+securities_ts <- ts(securities_df$yield, start = c(1950, 1), frequency = 12)
+
+forecast::ggAcf(diff(securities_ts, 1)) +
+    scale_x_continuous(breaks = 0:25) +
+    scale_y_continuous(limits = c(-0.2, 0.4)) +
+    ggtitle('Correlogram for first difference on british government securities')
+```
+
+The sample ACF suggests MA(1) so the integrated model for $X_t$ is `ARIMA(0, 1, 1)`
+
+```{r securities_model}
+securities_mod <- Arima(securities_ts, c(0, 1, 1))
+summary(securities_mod)
+sqrt(mean(securities_mod$residuals^2))
+```
+
+
+```{r securities_model_plot}
+securities_df %>% 
+    add_column(fitted = securities_mod$fitted) %>% 
+    rename(observed = yield) %>% 
+    pivot_longer(c(observed, fitted), names_to = 'series', values_to = 'yield') %>% 
+    ggplot(aes(index, yield, colour = series)) +
+    geom_line() +
+    scale_x_date(
+        breaks = year_breaks,
+        date_labels = '%Y'
+    ) +
+    labs(x = NULL)
+```
+
+Check the residuals
+
+```{r securities_residuals}
+forecast::tsdisplay(securities_mod$residuals, main = 'Government Securities - residuals')
+```
+
+The time plot above shows that the forecast errors fluctuate around zero with roughly constant variance, as required
+
+```{r securities_residuals}
+h_df <- tibble(
+    residuals = securities_mod$residuals
+)
+h_df %>% 
+    summarise(mean = mean(residuals), sd = sd(residuals))
+```
+
+
+```{r securities_residuals_histogram_plot}
+h_df %>% 
+    ggplot(aes(x = residuals)) +
+    geom_density() +
+    geom_function(
+        fun = dnorm,
+        args = list(mean = mean(h_df$residuals), sd = sd(h_df$residuals)),
+        colour = 'darkred'
+    )
+```
+
+### Selecting an ARIMA model
+
+There are two main steps involved in selecting an ARIMA model. The first step is to obtain a stationary time series. Prior to differencing, the time series might need to be transformed - for instance, by taking logarithms - to ensure that it can be represented by an additive model, and hence is stationary in variance.
+
+Then the order of differencing, d, should be selected to ensure that the time series is stationary in mean.
+
+
+Once a stationary time series has been obtained, the second step is to select an appropriate `ARMA(p, q)` model to represent it. The ARMA models you have met so far have all been either purely autoregressive - that is, `AR(p)` or `ARMA(p, 0)` - or purely moving average — that is, `MA(q)` or `ARMA(0, q)`.
+
+However, the whole point of introducing the `ARMA(p, q)` notation is to allow models in which both p and q are non-zero. Such models combine an autoregressive component and a moving average component, and are called mixed ARMA models.
+
+
+### ARMA(1, 1) model
+
+Simulate the following model
+
+$$
+X_t = 0.6(x_{t-1}) + Z_t + 0.9 Z_{t-1}
+$$
+
+```{r simulate_arma_1_1}
+# ? arima.sim
+arma_11 <- arima.sim(
+    model = list(order = c(1, 0, 1), ar = 0.6, ma = 0.9, sd = sqrt(2)),
+    n = 100
+)
+
+forecast::tsdisplay(arma_11, main = 'Simulated ARMA(1, 1) Model')
+```
+
+The sample autocorrelations tail off gradually to zero, as would be expected for an autoregressive model. The partial correlogram shows an alternating pattern, the magnitude of the sample partial autocorrelations also tailing off to zero gradually with increasing lag. This is what would be expected of a moving average model.
+
+
+### Identiying ARMA Models
+
+#### ARMA(0, 0) (White Noise)
+
+ACF: Zero at all lags, PACF: Zero at all lags
+
+#### ARMA(p, 0) (Autoregressive)
+
+ACF: Tails off to zero, PACF: Zero after lag p
+
+#### ARMA(0, q) (Moving Average)
+
+ACF: Zero after lag q, PACF: Tails off to zero
+
+#### ARMA(p, q) (Mixed)
+
+ACF: Tails off to zero, PACF: Tails off to zero
+
+
+### UK Index of Production
+
+
+The time plot of the (seasonally adjusted) quarterly UK index of production, between the first quarter of 1990 and the first quarter of 2005
+
+
+```{r production_ts}
+production_ts <- ts(production_df$production, start=c(1990, 1), frequency = 4)
+forecast::tsdisplay(production_ts, main = 'Quarterly UK Index of Production 1990 to 2005')
+
+```
+
+```{r production_differenced}
+forecast::tsdisplay(
+    diff(production_ts, 2),
+    main = 'Quarterly UK Index of Production 1990 to 2005'
+)
+```
+
+Twice differenced, ACF tails off to zero and the PACF is zero after lag 1, suggests `ARIMA(1, 2, 0)`
+
+```{r production_d2_simulation}
+arma_10 <- arima.sim(
+    model = list(order = c(1, 0, 0), ar = 0.7457, sd = sqrt(2)),
+    n = 100
+)
+forecast::tsdisplay(arma_10, main = 'Simulated ARMA(1, 0) Model')
+```
+
+
+```{r production_d2_fit}
+p2 <- diff(production_ts, 2)
+production_fit <- Arima(p2, order = c(1, 0, 0), method = 'ML')
+summary(production_fit)
+```
+
+```{r production_d2_plot}
+forecast::tsdisplay(p2)
+```
+
