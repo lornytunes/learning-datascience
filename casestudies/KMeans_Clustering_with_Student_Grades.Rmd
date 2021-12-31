@@ -1,0 +1,263 @@
+---
+title: "KMeans Clustering with Student Grades"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(patchwork)
+
+```
+
+
+```{r load_data}
+grades <- read_csv(
+    '../data/student_grades.csv',
+    col_types = cols(
+        Student = col_integer(),
+        English = col_integer(),
+        Math = col_integer(),
+        Science = col_integer()
+    )
+)
+skimr::skim(grades)
+```
+
+## Using K-means to Cluster Students
+
+```{r grade_matrix}
+grades_matrix <- grades %>% 
+    select(-Student) %>% 
+    data.matrix(rownames.force = TRUE)
+head(grades_matrix)
+```
+
+
+```{r k_means_3}
+set.seed(12345)
+km3 <- kmeans(
+    grades_matrix,
+    3,
+    nstart = 25
+)
+km3$centers
+```
+
+
+```{r kmeans_plot_1, fig.height=10, fig.width=8}
+km_data <- grades %>% 
+    mutate(Cluster = factor(km3$cluster))
+km_centers <- as_tibble(km3$centers) %>% 
+    mutate(Cluster = rownames(km3$centers))
+
+p1 <- km_data %>% 
+    ggplot(mapping = aes(x = English, y = Math, colour = Cluster)) +
+    geom_point() +
+    geom_point(data = km_centers, size = 10, alpha = 0.5, show.legend = FALSE) +
+    scale_x_continuous(limits = c(50, 100))
+    
+p2 <- km_data %>% 
+    ggplot(mapping = aes(x = English, y = Science, colour = Cluster)) +
+    geom_point() +
+    scale_x_continuous(limits = c(50, 100)) +
+    geom_point(
+        data = km_centers,
+        size = 10,
+        alpha = .3,
+        show.legend = FALSE
+    )
+
+p3 <- km_data %>% 
+    ggplot(mapping = aes(x = Math, y = Science, colour = Cluster)) +
+    geom_point() +
+    scale_x_continuous(limits = c(50, 100)) +
+    geom_point(
+        data = km_centers,
+        size = 10,
+        alpha = .3,
+        show.legend = FALSE
+    )
+
+# plot them in their own rows
+p1 / p2 / p3 + plot_layout(guides = 'collect')
+```
+
+
+```{r kmeans_plot_1_cleanup}
+rm(p1, p2, p3)
+```
+
+This can be abstracted into a general function
+
+```{r student_plot_routine}
+subject_plot <- function(data, centers, x_subject, y_subject) {
+    ggplot(data = data, mapping = aes(x = .data[[x_subject]], y = .data[[y_subject]], colour = Cluster)) +
+    geom_point() +
+    scale_x_continuous(limits = c(50, 100)) +
+    scale_y_continuous(limits = c(50, 100)) +
+    geom_point(
+        data = centers,
+        size = 10,
+        alpha = .3,
+        show.legend = FALSE
+    )
+}
+```
+
+
+
+```{r kmeans_plot_2, fig.width = 8, fig.height = 10}
+p1 <- subject_plot(km_data, km_centers, 'English', 'Math')
+p2 <- subject_plot(km_data, km_centers, 'English', 'Science')
+p3 <- subject_plot(km_data, km_centers, 'Math', 'Science')
+p1 / p2 / p3 + 
+    plot_layout(guides = 'collect') +
+    plot_annotation(title = paste('Student grades: k = ', length(km3$size)))
+```
+
+
+```{r kmeans_plot_2_cleanup}
+rm(p1, p2, p3)
+rm(km_data, km_centers)
+```
+
+
+
+
+```{r grade_plot_definition}
+grade_plot <- function(data, km) {
+    km_df <- mutate(data, Cluster = factor(km$cluster))
+    km_c <- as_tibble(km$centers) %>% 
+        mutate(Cluster = rownames(km$centers))
+    p_all <-
+        subject_plot(km_df, km_c, 'English', 'Math') /
+        subject_plot(km_df, km_c, 'English', 'Science') /
+        subject_plot(km_df, km_c, 'Math', 'Science') +
+        plot_layout(guides = 'collect') +
+        plot_annotation(title = paste0('Student Grades: k = ', length(km$size)))
+    return(p_all)
+}
+```
+
+### Using different values of k
+
+```{r grade_plot_k3, fig.width = 8, fig.height = 10}
+grade_plot(grades, km3)
+```
+
+```{r grade_plot_k4, fig.width = 8, fig.height = 10}
+km4 <- kmeans(grades_matrix, 4, nstart = 25)
+grade_plot(grades, km4)
+```
+
+
+## Cluster Stability
+
+```{r cluster_stability}
+cs3 <- fpc::clusterboot(
+    grades_matrix,
+    clustermethod = fpc::kmeansCBI,
+    k = 3,
+    nstart = 25,
+    count = FALSE
+)
+cs4 <- fpc::clusterboot(
+    grades_matrix,
+    clustermethod = fpc::kmeansCBI,
+    k = 4,
+    nstart = 25,
+    count = FALSE
+)
+tibble(
+    mean = cs3$bootmean,
+    dissolved = cs3$bootbrd
+)
+
+tibble(
+    mean = cs4$bootmean,
+    dissolved = cs4$bootbrd
+)
+```
+
+
+## Cluster WSS
+
+```{r cluster_withinss}
+k_scores <- tibble(
+    k = 1:15,
+    wss = map_dbl(1:15, function(k) sum(kmeans(grades_matrix, k, nstart=25)$withinss))
+)
+k_scores %>% 
+    ggplot(aes(x = k, y = wss)) +
+    geom_point(size = 3, colour = 'steelblue') +
+    geom_line() +
+    scale_x_continuous(breaks = k_scores$k) +
+    scale_y_continuous(breaks = seq(0, 300000, 50000)) +
+    labs(x = 'Number of Clusters', y = 'Within sum of squares')
+
+```
+
+
+### Calinski-Harabasz Index
+
+
+```{r calinski_harabasz}
+
+ch_index <- function(wss, bss, k, n) {
+    # within cluster variance - the average wss
+    if(k == 1) {
+        return(0)
+    }
+    W <- wss / (n - k)
+    # between cluster variance.
+    # the average contribution to the bss from each cluster
+    B <- bss / (k - 1)
+    # you want a small average wss and a large average bss, so we
+    # want to maximize the ratio B to W
+    return(B / W)
+}
+ch_index(km3$tot.withinss, km3$betweenss, 3, nrow(grades_matrix))
+
+# so
+calinski_harabasz <- function(km) {
+    wss <- km$tot.withinss
+    bss <- km$betweenss
+    n <- sum(km$size)
+    k <- length(km$size)
+    return(ch_index(wss, bss, k, n))
+}
+
+calinski_harabasz(km3)
+calinski_harabasz(km4)
+
+
+```
+
+
+```{r plot_calinski_harabasz}
+k_scores$ch <- map_dbl(1:15, ~calinski_harabasz(kmeans(grades_matrix, ., nstart = 25)))
+
+k_scores %>% 
+    ggplot(aes(x = k, y = ch)) +
+    geom_point() +
+    geom_line() +
+    scale_x_continuous(breaks = k_scores$k) +
+    labs(x = 'Number of Clusters', y = 'Calinski-Harabasz Score')
+```
+
+```{r calinksi_harabasz_with_fpc}
+k_scores$ch2 <- fpc::kmeansruns(
+    grades_matrix,
+    krange = 1:15,
+    criterion = 'ch'
+)$crit
+
+k_scores %>% 
+    ggplot(aes(x = k, y = ch2)) +
+    geom_point() +
+    geom_line() +
+    scale_x_continuous(breaks = k_scores$k) +
+    labs(x = 'Number of Clusters', y = 'Calinski-Harabasz Score')
+```
+

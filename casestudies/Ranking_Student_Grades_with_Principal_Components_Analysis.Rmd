@@ -1,0 +1,96 @@
+---
+title: "Ranking Student Grades with Principal Components Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+
+```{r load_data}
+grades <- read_csv(
+    '../data/student_grades.csv',
+    col_types = cols(
+        Student = col_integer(),
+        English = col_integer(),
+        Math = col_integer(),
+        Science = col_integer()
+    )
+)
+```
+
+
+
+
+```{r subject_plot}
+grades %>% 
+    pivot_longer(c(-Student), names_to = 'Subject', values_to = 'Score') %>% 
+    ggplot(aes(x = Score,  y = stat(scaled), colour = Subject)) +
+    geom_density()
+
+```
+
+```{r grade_covariance}
+cov(grades_matrix)
+cor(grades_matrix)
+cov(scale(grades_matrix))
+```
+
+```{r eigen_vectors_of_the_covariance}
+grades_eig <- base::eigen(cov(scale(grades_matrix)))
+evals <- grades_eig$values
+evcecs <- grades_eig$vectors
+
+# or better
+rm(grades_eig)
+library(zeallot)
+c(evals, evecs) %<-% eigen(cor(grades_matrix))[1:2]
+```
+
+```{r calculate_the_principal_compoenents}
+grades_pc <- stats::prcomp(grades_matrix, center=T, scale=T)
+
+pcomps <- scale(grades_matrix) %*% grades_pc$rotation
+head(pcomps)
+head(grades_pc$x)
+```
+
+
+```{r look_at_the_weights_and_singular_values}
+# the weights are the eigen vectors
+evecs
+grades_pc$rotation
+# singular values
+sqrt(evals)
+grades_pc$sdev
+# and the proportional variance in each column is
+prop.table(grades_pc$sdev)
+```
+
+```{r add_score_column}
+# pc1 is negative, so we sort in ascending order
+PC1 <- grades_pc$x[,1]
+PC2 <- grades_pc$x[,2]
+grades %>% 
+    mutate(Score = PC1) %>% 
+    arrange(Score) %>% 
+    head(n = 50)
+
+```
+
+
+```{r use_pc1_to_rank_students}
+grades <- grades %>% 
+    # slice(order(PC1)) %>% 
+    mutate(Score = PC1) %>% 
+    arrange(Score) %>% 
+    mutate(Rank = dense_rank(Score)) %>% 
+    select(-Score)
+
+write_rds(grades, 'data/grades.rds')
+
+grades
+rm(evals, evecs, grades_pc, pcomps, PC1)
+```

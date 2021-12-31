@@ -1,0 +1,308 @@
+---
+title: "Matrix Factorization and SVD"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+options(digits = 3)
+```
+
+
+## Movie Ratings
+
+```{r moving_ratings}
+# 4 users rated 5 movies
+# mall cop, twister, jaws, observer report, sharknado
+# we want to predict the ratings
+users <- c('Ana', 'Betty', 'Carlos', 'Dana')
+ratings <- tibble(
+    User = c('Ana', 'Betty', 'Carlos', 'Dana'),
+    M1 = c(3, 1, 3, 4),
+    M2 = c(1, 2, 1, 3),
+    M3 = c(1, 4, 1 ,5),
+    M4 = c(3, 1, 3, 4),
+    M5 = c(1, 3, 1, 4)
+)
+
+ratings_m <- ratings %>% 
+    select(-User) %>% 
+    data.matrix()
+
+rownames(ratings_m) <- ratings$User
+ratings_m
+
+```
+
+How do humans behave?
+
+```{r}
+m1 <- tibble(
+    User = users,
+    M1 = rep(3, 4),
+    M2 = rep(3, 4),
+    M3 = rep(3, 4),
+    M4 = rep(3, 4),
+    M5 = rep(3, 4)
+)
+
+m2 <- tibble(
+    User = users,
+    M1 = c(3, 1, 3, 4),
+    M2 = c(1, 2, 1, 3),
+    M3 = c(1, 4, 1, 5),
+    M4 = c(3, 1, 3, 4),
+    M5 = c(1, 3, 1, 4)
+)
+
+# random
+m3 <- tibble(
+    User = users,
+    M1 = sample(1:4, 4, replace = T),
+    M2 = sample(1:4, 4, replace = T),
+    M3 = sample(1:4, 4, replace = T),
+    M4 = sample(1:4, 4, replace = T),
+    M5 = sample(1:4, 4, replace = T)
+)
+m1
+m2
+m3
+```
+
+First one is not realistic. The third one is completely random.
+
+The second is the one.
+
+```{r}
+m2
+```
+
+
+## Dependencies
+
+### Similar users
+
+```{r}
+# similar users
+m2 %>% 
+    slice(c(1, 3))
+```
+
+### Similar Movies
+
+```{r}
+# similar movies
+m2 %>% 
+    select(M1, M4)
+```
+
+
+### Dependent users
+
+```{r}
+m2 %>% 
+    slice(2:4)
+```
+
+
+```{r}
+r2 <- m2 %>% 
+    select(-User) %>% 
+    data.matrix()
+rownames(r2) <- m2$User
+# sum rows 2 and 3 gives 4
+apply(r2[2:3,], 2, FUN = sum)
+
+```
+
+For example Betty loves action, carlos loves comedy and dana loves action and comedy
+
+
+### Dependent movies
+
+```{r}
+m2 %>% 
+    select(M2, M3, M5)
+```
+
+Column 5 is the average of columns 2 and 3. 2 is twister, 3 is jaws and 5 is sharknado.
+
+These dependencies are used to guess ratings
+
+Look at row 3 column 5. Imagine it to be blank. How could you predict its value?
+
+```{r convert_matrix_to_dataframe}
+t2m <- function(df) {
+    r <- data.matrix(df[,-1])
+    rownames(r) <- df[[1]]
+    return(r)
+}
+```
+
+
+```{r movie_blanks}
+r1 <- t2m(m1)
+r1[3,5] <- NA
+r1
+
+r2 <- t2m(m2)
+r2[3,5] <- NA
+r2
+
+r3 <- t2m(m3)
+r3[3,5] <- NA
+r3
+    
+```
+
+One is easy. Two you can use the simlarity to Ana to predict 1. For 3 there are no dependencies so you would have to use the mean value.
+
+
+## Ratings
+
+Matrix factorization is used to figure out these dependencies
+
+Lets see how to find the two smaller matrices that generated `ratings`.
+
+```{r}
+ratings
+```
+
+For that we need features
+
+For movies it could be comedy, drama, action, scary, does it have a sad dog or meryl streep.
+
+Look at 2 features: *Comedy* and *Action*
+
+```{r movie_features}
+features <- c('Comedy', 'Action')
+# ana likes comedy but not action
+(ana <- matrix(c(1, 0), ncol=2, dimnames=list(c('Ana'), features)))
+(betty <- matrix(c(0, 1), ncol=2, dimnames=list(c('Betty'), features)))
+(dana <- matrix(c(1, 1), ncol=2, dimnames=list(c('Dana'), features)))
+# mall cop has 3 for comedy, 1 for action
+(mall_cop <- matrix(c(3, 1), ncol = 2, dimnames=list(c('Mall Cop'), features)))
+(sharknado <- matrix(c(1, 3), ncol = 2, dimnames=list(c('Sharknado'), features)))
+# so the predicted ratings for mall cop would be the dot product
+ana %*% t(mall_cop)
+betty %*% t(mall_cop)
+dana %*% t(sharknado)
+
+```
+
+## Movie features
+
+```{r movie_and_user_features}
+movie_features <- tibble(
+    movie = colnames(m2)[-1],
+    comedy = c(3, 1,1, 3, 1),
+    action = c(1, 2, 4, 1, 3)
+)
+user_features <- tibble(
+    user = ratings$User,
+    comedy = c(1, 0, 1, 1),
+    action = c(0, 1, 0, 1)
+)
+movie_features
+user_features
+```
+
+Take the dot products
+
+```{r users_movies_dot_product}
+movies_m <- t2m(movie_features)
+users_m <- t2m(user_features)
+# 4x2 . 2x5
+users_m %*% t(movies_m)
+```
+
+storage savings: 2000 users, 1000 movies, 100 features
+
+```{r storage_savings}
+2000 * 1000
+
+(100 * 2000) + (100 * 1000)
+```
+
+
+## How did we find the factorization?
+
+### SVD Example
+
+```{r svd_example}
+movies <- tibble(
+    matrix = c(1, 3, 4, 5, 0, 0, 0),
+    alien = c(1, 3, 4, 5, 2, 0, 1),
+    serenity = c(1, 3, 4, 5, 0, 0, 0),
+    casablanca = c(0, 0, 0, 0, 4, 5, 2),
+    amelie = c(0, 0, 0, 0, 4, 5, 2)
+)
+movies
+```
+
+
+```{r}
+movies_m <- movies %>% 
+    data.matrix(rownames.force = T)
+movies_m
+```
+
+Both movies and users break into two groups - sci-fi and romance
+
+```{r}
+# science fiction concept
+movies_m[1:4, 1:3]
+# romance
+movies_m[5:7, 4:5]
+```
+
+SVD Factorisation: $A = U \Sigma V^T$
+
+```{r movies_svd}
+options(digits = 3)
+# the rank is 3, so we should get 3 concepts
+qr(movies_m)$rank
+movies_svd <- svd(movies_m, nu = 3, nv = 3)
+concepts <- c('SciFi', 'Romance', 'Other')
+# left singular vectors. users -> concepts
+U <- movies_svd$u
+rownames(U) <- rownames(movies_m)
+colnames(U) <- concepts
+# power matrix sigma. only the non-zero values
+D <- diag(round(movies_svd$d[1:3], 2))
+rownames(D) <- concepts
+colnames(D) <- concepts
+# right singular vectors. movies -> concepts
+V <- t(movies_svd$v)
+colnames(V) <- colnames(movies_m)
+rownames(V) <- concepts
+```
+
+#### User to concept similarity matrix
+
+```{r svd_u}
+U
+```
+
+#### Singular Values
+
+These are the strengths of each concept. The third concept is probably just noise
+
+```{r svd_sigma}
+D
+```
+
+### Movie to Concept similarity matrix
+
+```{r svd_v}
+V
+```
+
+
+
+
+```{r confirm_factorization}
+# 7x3 . 3x3 . 3x5
+round(U %*% D %*% V, 2)
+```
