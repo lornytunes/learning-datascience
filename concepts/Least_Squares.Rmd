@@ -1,0 +1,174 @@
+---
+title: "Least Squares"
+output:
+    html_document: default
+---
+
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    error = T,
+    message = F,
+    warning = F
+)
+options(digits = 3)
+suppressMessages(library(tidyverse))
+source('../lib/lsq.R')
+```
+
+
+## Normal Equations
+
+Find a least-squares solution for the inconstent system $A \textbf{x} = \textbf{b}$ for the following:
+
+$$
+\left(
+\begin{array}{cc}
+4 & 0 \\
+0 & 2 \\
+1 & 1
+\end{array}\right) \cdot
+\left[ x_1, x_2 \right] =
+\left(
+\begin{array}{c}
+2 \\
+0 \\
+11
+\end{array}\right)
+$$
+
+```{r example_1}
+A = matrix(c(4, 0, 0, 2, 1, 1), nrow=3, byrow=T)
+b = matrix(c(2, 0, 11), nrow=3)
+print(list(A=A, b=b))
+```
+Here there are more rows then columns, i.e the rowspace is $\mathcal{R}^2$ and the column space is $\mathcal{R}^3$.
+
+We say that such a system is *overconditioned*, i.e has no solution. However we can find a vector $\hat{\textbf{x}}$ such that $A \hat{\textbf{x}} = \hat{\textbf{b}}$ where $\hat{\textbf{b}}$ is the column vector in $\mathcal{R}^3$ that is a close as possible to $\textbf{b}$
+
+To achive this we instead solve a system of **normal equations**
+
+$$
+A^TA \textbf{x} = A^T \textbf{b}
+$$
+The solutions to the normal equations are the *least-squares* solutions of the original system.
+
+```{r example_1_normal}
+ATA = t(A) %*% A
+ATb = t(A) %*% b
+print(ATA)
+print(ATb)
+```
+
+
+```{r example_1_solution}
+# ATA is invertible
+det(ATA)
+ATA_I = MASS::ginv(ATA)
+x = ATA_I %*% ATb
+print(ATA_I)
+print(x)
+```
+
+Now are solution $A\hat{x}$ is in the column space of $A$ (i.e is a linear combination of the columns of A) and $\textbf{b} - A\hat{\textbf{x}}$ is orthogonal to that,  so $\textbf{b} = A\hat{\textbf{x}} + (\textbf{b} - A\hat{\textbf{x}})$. Hence $A\hat{\textbf{x}}$ is the projection of $\textbf{b}$ onto the column space of $A$
+
+```{r example_1_confirmation}
+Ax <- A %*% x
+print(Ax)
+# and the vector orthogonal is
+Ax_orth = b - Ax
+# note that this vector is also orthogonal to each column in A
+# giving the following orthogoal decomposition of b
+Ax + Ax_orth
+# and the total error is
+sqrt(t(Ax_orth) %*% Ax_orth)
+# or
+Matrix::norm(Ax_orth, type="f")
+```
+
+```{r example_1_solve}
+solve(ATA, ATb)
+x
+```
+
+## The Moore-Penrose Pseudo-Inverse of a Matrix
+
+If you have an overdetermined system with a non square $m \times n$ matrix A:
+
+$$
+A \vec{x} = \vec{b}
+$$
+
+Then you cannot take the deteminant or the inverse so $A^{-1} \vec{b}$ does not work. However since transposition iis possible then we can multiply both sides of the equation with $A^T$
+
+$$
+A \vec{x} = \vec{b} \Leftrightarrow A^TA \vec{x} = A^T\vec{b}
+$$
+Note that $A^TA$ **is** a square matrix whose dimensions are $(n \times m )\times (m \times n) = (n \times n)$
+
+Let us assume that is is ivertible then
+
+$$
+x = (A^TA)^{-1} A^T\vec{b}
+$$
+and we have just derived the *pseudo-inverse* of matrix A, denoted as $A^+$
+
+$$
+A^+ = (A^TA)^{-1} A^T
+$$
+Unlike the inverse, the pseudo-inverse does not need the matrix to be square and have linearly independent rows.
+and much like the regular linear system we get the solution of the (possible non-square) system of equations as
+
+$$
+A\vec{x} = \vec{b} \Leftrightarrow \vec{x} = A^+\vec{b}
+$$
+
+
+
+```{r example_1_pseudo_inverse}
+A_plus <- ATA_I %*% t(A)
+A_plus
+A_plus %*% b
+x
+```
+
+
+## Orthogonal Columns
+
+The next example shows how to find a least-squares solution of $A \textbf{x} = \textbf{b}$ when the columns of A are orthogonal.
+
+```{r example_2}
+a1 = c(1, 1, 1, 1)
+a2 = c(-6, -2, 1, 7)
+iprod(a1, a2)
+# and the columns of A are orthogonal
+A <- cbind(a1, a2)
+b = c(-1, 2, 1, 6)
+print(A)
+print(b)
+```
+
+Because the columns $a_1$ and $a_2$ of A are orthogonal, we can take the orthogonal projection of b onto `Col A`
+
+```{r example_2_proj}
+p1 <- iprod(b, a1) / iprod(a1, a1)
+p2 <- iprod(b, a2) / iprod(a2, a2)
+```
+
+and our least squares solution is given by
+
+```{r example_2_sol}
+x = c(p1, p2)
+Ax = A %*% x
+print(x)
+print(Ax)
+```
+
+Which can be confirmed
+
+```{r example_2_solve}
+ATA <- t(A) %*% A
+ATb <- t(A) %*% b
+solve(ATA, ATb)
+```

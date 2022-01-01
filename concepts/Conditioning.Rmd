@@ -1,0 +1,93 @@
+---
+title: "Conditioning"
+output:
+    html_document: default
+---
+
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    error = T,
+    message = F,
+    warning = F
+)
+options(digits = 3)
+```
+
+What does it mean when we say that a system is *ill-conditioned*?
+
+An ill-conditioned system is one whose determinants are close to zero.
+
+Lets say we have the following system:
+
+$$
+x_1 + x_2 = 2 \\
+2 x_2 + 2 x_2 = 4
+$$
+This can be written as a linear system with a square matrix:
+
+$$
+\left[ \begin{array}{cc}
+1 & 1 \\
+2 & 2
+\end{array}\right]
+\left[\begin{array}{c}
+x_1 \\
+x_2
+\end{array}\right] = 
+\left[ \begin{array}{c}
+2 \\
+4
+\end{array}\right]
+$$
+
+Which has no solution, becuase the second equation is the same as the first
+
+```{r example_3_not_solvable}
+A = cbind(c(1, 2), c(1, 2))
+det(A)
+```
+Now consider this system:
+
+$$
+\left[ \begin{array}{cc}
+2 & 1 \\
+4 & 2.001
+\end{array}\right]
+\left[\begin{array}{c}
+x_1 \\
+x_2
+\end{array}\right] = 
+\left[ \begin{array}{c}
+3 \\
+6
+\end{array}\right]
+$$
+
+This is solvable, but is *numerically unstable*. Note how small the determinant is and how large the inverse due to the division by the extremely small determinant.
+
+```{r example_3_unstable}
+A = cbind(c(2, 4), c(1, 2.001))
+b = c(3, 6)
+AI <- MASS::ginv(A)
+det(A)
+AI
+```
+
+The solution to this system is as follows:
+
+```{r example_3_solve1}
+solve(A, b)
+```
+
+But change $\vec{b}$ just a little and make $\vec{b} = \left[ \begin{array}{c}3 \\ 6.01 \end{array} \right]$ and the solution is drastically different:
+
+```{r example_3_solve2}
+solve(A, c(3, 6.01))
+```
+
+This is inherently unstable and is a consequence of the near singularity of the matrix `A`.
+
+Such linear systems are called ill-conditioned.
+
