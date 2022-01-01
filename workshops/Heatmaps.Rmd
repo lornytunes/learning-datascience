@@ -1,0 +1,186 @@
+---
+title: "Creating Heatmaps"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE
+)
+options(digits=3)
+library(tidyverse)
+library(gplots)
+library(pheatmap)
+```
+
+## Using base `heatmap` with `mtcars`
+
+Heatmaps convert a 2 dimensional numeric matrix to a colour
+
+
+```{r cars_matrix}
+mtcars_mat <- data.matrix(mtcars)
+head(mtcars_mat)
+```
+
+```{r cars_heatmap_1}
+heatmap(mtcars_mat)
+```
+
+too much. look at the scale argument. The default is row (i.e individual cars). We want the column direction. we want the highs and lows in our variables.
+
+```{r cars_heatmap_2}
+heatmap(mtcars_mat, scale = 'column')
+```
+
+colours - look at `cm.colors`
+
+```{r cars_heatmap_3}
+heatmap(mtcars_mat, scale = 'column', col = cm.colors(n=nrow(mtcars_mat)))
+```
+You could also take a look at `hcl.pals()`
+
+Remove the dendogram
+
+```{r cars_heatmap_4}
+heatmap(mtcars_mat, scale='column', Colv = NA)
+```
+```{r cars_heatmap_cleanup}
+rm(mtcars_mat)
+```
+
+
+## Using gplots
+
+
+```{r load_heatmap_data}
+protein_treatments_df <- read_csv(
+    '../data/protein_treatments.csv',
+    col_types = cols(
+        Row_ID = col_integer()
+    )
+)
+```
+
+
+```{r heatmap_data_etl}
+protein_treatments_df <- protein_treatments_df %>% 
+    # remove the spaces from the column names
+    rename_with(~str_replace(.x, ' ', '_')) %>% 
+    # and we need rownames
+    column_to_rownames(var='Row_ID')
+```
+
+
+```{r heatmap_data_matrix}
+# remove the t-test variables
+protein_treatments_mat <- protein_treatments_df %>% 
+    select(-T_test) %>% 
+    data.matrix()
+head(protein_treatments_mat)
+```
+
+scale in the row direction - how each protein has reacted to each treatment: `heatmap.2` does the clustering before the scaling
+
+
+```{r heatmap_2_initial, fig.height=10, fig.width=10}
+gplots::heatmap.2(protein_treatments_mat, scale='row',  cexCol = 0.8)
+```
+
+It helps to
+
+1. scale the data before visualisation (`?scale`)
+2. transpose the matrix so that the rows are scaled (`?t`)
+
+
+```{r data_scaled}
+# transpose, scale then transpose back
+data_scaled <- t(scale(t(protein_treatments_mat)))
+```
+
+protein responses are now comprable to each other
+
+```{r heatmap_2_scaled, fig.height=12, fig.width=10}
+gplots::heatmap.2(protein_treatments_mat, scale='row', cexCol = 0.8)
+```
+
+
+
+```{r heatmap_2_palette, fig.height=12, fig.width=10}
+my_palette <- grDevices::colorRampPalette(c('blue', 'white', 'red'))
+heatmap.2(
+    data_scaled,
+    col = my_palette(n=20),
+    trace = 'none',
+    dendrogram = 'row',
+    main = 'Protein response',
+    margins = c(6, 4),
+    cexRow = 0.8,
+    cexCol = 0.8
+)
+```
+
+- top right: proteins that were upregulated by the treatments
+- bottom left: regulated by the treatments
+
+
+```{r heatmap_2_cleanup}
+dev.off()
+rm(protein_treatments_df, protein_treatments_mat, my_palette, data_scaled)
+```
+
+## Using `pheatmap`
+
+
+```{r pheatmap_data}
+data_m <- matrix(rnorm(25), 5, 5)
+colnames(data_m) <- paste0('Treatment', 1:5)
+rownames(data_m) <- paste0('Gene', 1:5)
+```
+
+
+```{r pheatmap_plot}
+pheatmap(
+    data_m,
+    title='Pretty heatmap',
+    cellwidth = 50,
+    cellheight = 30,
+    fontsize = 11,
+    display_numbers = TRUE,
+    scale = 'row'
+    # filename='plots/pheatmap.pdf'
+)
+```
+
+
+```{r pheatmap_cleanup}
+rm(data_m)
+```
+
+
+## Using `ggplot2`
+
+We will be using the `esoph` dataset (`?esoph`)
+
+
+```{r esoph_data}
+esoph_sub <- esoph %>%
+    filter(agegp == '55-64') %>% 
+    mutate(frequency = ncases / (ncases + ncontrols))
+```
+
+how frequent are cases in this population?
+
+
+```{r esoph_plot}
+# 2 categorical varaiables to create the cells, and a numerical value to fill them
+esoph_sub %>% 
+    ggplot(aes(x = alcgp, y = tobgp, fill = frequency)) +
+    geom_tile(color = 'white') +
+    scale_fill_gradient(low = 'white', high = 'steelblue') +
+    theme_minimal() +
+    labs(fill = 'Cancer frequency', x = 'Alcohol consumption', y = 'Tobacco consumption')
+```
+
+
+
