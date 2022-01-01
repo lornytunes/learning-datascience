@@ -1,0 +1,300 @@
+---
+title: "SVD with Users and Movies"
+output:
+    html_document: default
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+options(digits = 3)
+library(tidyverse)
+library(lubridate)
+```
+
+```{r, include=F}
+closest <- function(xv, sv){
+    # Returns the element in xv that is closest to the scalar value sv
+    distances <- abs(xv-sv)
+    xv[which(distances == min(distances))]
+}
+
+xv <- rnorm(1000, 100, 10)
+# which value is closest to 108?
+closest(xv, 72)
+```
+
+
+## Covariance
+
+
+```{r load_orders}
+orders <- readr::read_tsv(
+    '../data/svd_orders.tsv',
+    col_types = cols(
+        customer=col_character(),
+        date=col_date(format='%m/%d/%Y'),
+        amount=col_integer()
+    )
+)
+```
+
+```{r orders_wide}
+orders_wide <- orders %>% 
+    pivot_wider(names_from='date', values_from='amount', values_fill=0)
+orders_wide
+```
+
+```{r orders_matrix}
+orders_matrix <- orders %>% 
+    mutate(date=strftime(date, '%a')) %>% 
+    rename(day=date) %>% 
+    pivot_wider(names_from='day', values_from='amount', values_fill=0) %>% 
+    column_to_rownames('customer') %>% 
+    data.matrix()
+orders_matrix
+```
+```{r orders_covariance_matrix}
+N <- nrow(orders_matrix)
+A <- t(orders_matrix) %*% orders_matrix
+A
+```
+
+
+```{r orders_eigen_values}
+spectrum <- eigen(A, symmetric=T)
+round(spectrum$values, 2)
+```
+
+```{r orders_covariance_by_hand}
+# covariance (the expectation of the product x*y)
+# subtract column means
+(col_means <- apply(orders_matrix, 2, mean))
+M <- sweep(orders_matrix, 2, col_means)
+(t(M) %*% M) / (N-1)
+```
+
+
+```{r orders_covariance}
+# or more succintly
+cov(orders_matrix)
+friday <- orders_matrix[,3]
+saturday <- orders_matrix[,4]
+# remember how to compute covariance
+sum((friday - mean(friday)) * (saturday - mean(saturday))) / (N - 1)
+cov(friday, saturday)
+# or if the matrix is already centered
+friday_c <- M[,3]
+saturday_c <- M[,4]
+sum(friday_c * saturday_c) / (N-1)
+```
+```{r orders_correlation}
+# if you divide by the geometric mean of the two variances you get
+# the correlation coefficient
+cov(friday, saturday) / sqrt(var(friday) * var(saturday))
+cor(friday, saturday)
+```
+```{r orders_cleanup}
+# clean environment
+rm(list=ls())
+```
+
+
+## Users to Movies
+
+$$
+A = U \Sigma V^T
+$$
+
+Where $A=m \times n$, $U=m \times r$, $\Sigma=r \times r$ and $V=n \times r$
+
+
+```{r load_movies}
+
+movies <- read_tsv('../data/svd_movies.tsv', col_types = cols(
+    Matrix='i',
+    Alien='i',
+    Serenity='i',
+    Casablanca='i',
+    Amelie='i'
+))
+```
+
+
+```{r movies_matrix}
+movies_matrix <- movies %>% 
+    column_to_rownames('User') %>% 
+    data.matrix()
+movie_names <- colnames(movies_matrix)
+concept_names <- c('SciFi', 'Romance', 'Noise')
+movies_matrix
+
+```
+
+```{r movies_svd}
+movies_svd <- base::svd(movies_matrix)
+# how many singular vectors
+round(movies_svd$d, 2)
+movies_svd <- base::svd(movies_matrix, nu=3, nv=3)
+U <- round(movies_svd$u, 2)
+D <- diag(movies_svd$d[1:3])
+V <- round(t(movies_svd$v), 2)
+
+rownames(U) <- rownames(movies_matrix)
+colnames(U) <- concept_names
+colnames(V) <- movie_names
+rownames(V) <- concept_names
+rownames(D) <- concept_names
+colnames(D) <- concept_names
+```
+
+U is _user-to-concept_ similarity matrix
+
+```{r movies_svd_u}
+U
+```
+Where each entry in the first column tells us how much a given user belongs to a given concept.
+
+```{r movies_svd_s}
+D
+```
+
+Each of the entries in `D` represent the strength of each concept.
+
+
+```{r movies_svd_v}
+V
+```
+
+V is a _movie-to-concept_ similarity matrix.
+
+The first three movies in the first row belong to the _Sci-Fi_ concept, and the last 2 movies in the second row correspond to the _Romance_ concept.
+
+
+### Reconstructing `A`
+
+```{r movies_approx}
+M <- U %*% D %*% V
+colnames(M) <- colnames(movies_matrix)
+rownames(M) <- rownames(movies_matrix)
+round(M, 1)
+```
+
+U is row-to-concept, V is column-to-concept and $\Sigma$ models the strength of each concept.
+
+## Dimensionality Reduction
+
+$U \Sigma$ gives the coordinates of the points in the projection axis.
+
+```{r movies_svd_projection}
+P <- round(U %*% D, 2)
+P
+apply(P, 2, var)
+```
+
+## Example: Find users that like Matrix
+
+We need to map a query into our concept space
+
+```{r}
+# remove the third singular vector
+V <- V[1:2,]
+```
+
+Our vector represents a movie, so we project onto our movies-to-concepts space `V`
+
+Remember `V` represents our movie-to-concept similarities
+
+```{r project_movie_vectors}
+concept_names <- concept_names[1:2]
+# query point representing a user that likes the matrix
+q <- matrix(c(5, 0, 0, 0, 0), nrow=1, dimnames=list(c('q'), movie_names))
+q
+# the two singular vectors in V are orthogonal to each other
+# 1x5 5x2
+q_concept <- q %*% t(V)
+colnames(q_concept) <- concept_names
+# coordinates in the concept space
+abs(q_concept)
+# now we have a user who likes alien and serenity
+d <- matrix(c(0, 4, 5, 0, 0), nrow=1, dimnames=list(c('d'), movie_names))
+d
+d_concept <- d %*% t(V)
+colnames(d_concept) <- concept_names
+abs(d_concept)
+```
+
+Notice that the `q` and `d` had zero ratings in common, but the concept matrices are similar.
+
+
+## Eigen-decomposition
+
+SVD is
+
+$$
+A = U \Sigma V^T
+$$
+This relates to the diagonalization of a symmetric matrix:
+
+$$
+A = X \Lambda X^T
+$$
+
+
+This works when A is symmetric. `U`, `V` and `X` are orthonormal (i.e $X^T X = I$), and $\Sigma$ and $\Lambda$ are diagonal.
+
+To create a symmetric matrix you need $A A^T$ or $A^T A$
+
+```{r}
+movies_matrix %*% t(movies_matrix)
+t(movies_matrix) %*% movies_matrix
+```
+
+$$
+A A^T = U \Sigma V^T (U \Sigma V^T)^T = U \Sigma V^T (V \Sigma^T U^T)
+$$
+
+Since $V^TV = I$ we get
+
+$$
+A A^T = U \Sigma \Sigma^T U^T
+$$
+
+There is a similar logic for $A^T A$
+
+$$
+A^TA = V \Sigma^T U^T (U \Sigma V^T) = V \Sigma \Sigma^T V^T
+$$
+
+And $\Sigma \Sigma^T = \Lambda$, so $\Sigma$ must contain the square roots of the eigen values, and `U` is the set of eigen vectors for $A A^T$ and `V` are the eigen values for $A^T A$
+
+
+```{r}
+A <- t(movies_matrix) %*% movies_matrix
+res <- base::eigen(A)
+round(res$values, 2)
+D^2
+round(res$vectors, 2)
+V
+```
+
+Pros:
+
+#. Optimal low-rank approximation in terms of the frobenius norm
+
+Cons:
+
+#. Interpretability problem: A singular vector specifies a linear combination of all input columns and rows.
+#. Lack of Sparsity: Singular vectors are dense
+
+
+```{r add_concept_group_feature_to_users}
+movies$group = factor(c(1, 1, 1, 1, 2, 2, 2), labels=c('Sci-Fi', 'Romance'))
+```
+
+
+
+```{r matrix_alien_plot}
+ggplot(movies, aes(x=Matrix, y=Alien, color=group)) +
+    geom_point()
+```
+
