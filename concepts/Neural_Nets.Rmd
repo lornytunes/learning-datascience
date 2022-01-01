@@ -1,0 +1,207 @@
+---
+title: "Introduction to Neural Networks"
+output:
+    html_document: default
+---
+
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    error = T,
+    message = F,
+    warning = F
+)
+options(digits = 3)
+suppressMessages(library(tidyverse))
+library(rgl)
+knitr::knit_hooks$set(webgl = hook_webgl)
+source('../lib/lsq.R')
+```
+
+
+## A First Look at the Data
+
+```{r model_data}
+# hardness/sharpness scores
+data <- read_csv(
+    '../data/hardness_sharpness.csv',
+    col_types = cols(
+        hardness = col_double(),
+        sharpness = col_double(),
+        score = col_double()
+    )
+)  %>% 
+    mutate(action = as.factor(case_when(
+        score > 0 ~ 'retreat',
+        score < 0 ~ 'approach',
+        score == 0 ~ 'ignore'
+    )))
+data
+```
+
+```{r model_data_plot_3d, include=F, webgl=TRUE}
+colors <- c('#FF0000', '#00FF00', '#0000FF')
+data$color <- colors[as.numeric(data$action)]
+plot3d(
+    x=data$hardness,
+    y=data$sharpness,
+    z=data$score,
+    col=data$color,
+    xlab='Hardness',
+    ylab='Sharpness',
+    zlab='Score',
+    type='p',
+    size=10,
+    xlim=c(0, 1),
+    ylim=c(0, 1),
+    zlim=c(-1, 1)
+)
+```
+
+## Matrix-Vector Multiplication
+
+The central equation in neural nets is the weighted sum matrix multiplication
+
+$$
+\vec{y} = \vec{w}^T\vec{x} + b\\
+\vec{y} =
+\left[ \begin{array}{cc}w_0 & w_1\end{array}\right]
+\left[ \begin{array}{c}x_0 \\ x_1\end{array}\right] + b \\
+\vec{y} =
+\left[ \begin{array}{ccc}w_0 & w_1 & b\end{array}\right]
+\left[ \begin{array}{c}x_0 \\ x_1 \\ 1\end{array}\right]
+$$
+
+This is the formulation for individual data points. When we have a matrix of data points then the equation becomes
+
+$$
+\vec{y} = X\vec{w}^T
+$$
+
+Consider the standard equation for a 2D plane in 3D
+
+$$
+ax + by + cz + d = 0
+$$
+
+If you rewrite it like this:
+
+$$
+\left[\begin{array}{ccc}
+a & b & c
+\end{array}\right]
+\left[\begin{array}{c}
+x \\
+y \\
+z
+\end{array}\right] + d = 0
+$$
+
+is the same as $\vec{w}^T\vec{x} + b = 0$ with $\vec{w} = \left[\begin{array}{c}a \\ b \\ c\end{array}\right]$ and $\vec{x} = \left[\begin{array}{c}x \\ y \\ z\end{array}\right]$
+
+This means that all points $\vec{x}$ for which $\vec{w}^T\vec{x}+b < 0$ lie on the same side of the hyper-plane and all points for which $\vec{w}^T\vec{x}+b > 0$ lie on the other side. All points $\vec{x}$ for which $\vec{w}^T\vec{x}+b = 0$ lie on the hyper-plane.
+
+## A Least squares solution
+
+```{r model_data_least_squares}
+n <- nrow(data)
+X <- data %>% 
+    select(hardness, sharpness) %>% 
+    data.matrix()
+y <- data %>% 
+    pull(score)
+# we need three parameters - hardness, sharpness and b (the offset)
+X <- cbind(X, rep(1, n))
+colnames(X) <- c(colnames(X)[1:2], 'offset')
+X
+```
+
+Next we take our normal equations $X^TX$ and $X^Ty$
+
+```{r model_data_least_squares_normal_equations}
+XTX <- t(X) %*% X
+XTX
+XTy <- t(X) %*% y
+XTy
+```
+
+```{r model_data_least_squares_solution}
+XTX_I <- MASS::ginv(XTX)
+w <- XTX_I %*% XTy
+round(w, 2)
+```
+
+Which is very close to the true solution $\left[1, 1, -1]\right]$
+
+Using the pseudo inverse is even simpler
+
+```{r model_data_pseudo_inverse}
+X_p <- pseudo_inverse(X)
+w <- X_p %*% y
+w
+```
+
+```{r sin_cubic_setup}
+sdata <- tibble(
+   x = seq(-pi, pi, length.out=2000) 
+) %>% mutate(y=sin(x))
+
+```
+
+```{r sin_cubic_plot}
+sdata %>% 
+    ggplot(aes(x=x, y=y)) +
+    geom_line() +
+    scale_y_continuous(limits=c(-1, 1))
+```
+
+```{r sin_cubic_fit_model}
+fit_poly_3 <- lm(y~poly(x, 3), data=sdata)
+broom::tidy(fit_poly_3) %>% 
+    mutate_if(is.double, round, 5)
+```
+
+```{r sin_cubic_add_predictions}
+sdata <- sdata %>% 
+    modelr::add_predictions(fit_poly_3, var='pred')
+```
+
+
+```{r sin_cubic_plot_fit}
+sdata %>% 
+    pivot_longer(cols=c('y', 'pred'), names_to='response') %>% 
+    ggplot(aes(x=x, y=value, color=response)) +
+    geom_line() +
+    scale_y_continuous(limits=c(-1, 1))
+```
+```{r}
+sdata <- sdata %>% 
+    mutate(
+        grad_pred = -0.042 + 0.837*x + 0.007 * x^2 - 0.091 * x^3
+    )
+```
+
+
+
+```{r sin_cubic_better_fit}
+
+sdata %>% 
+    pivot_longer(cols=c('y', 'pred', 'grad_pred'), names_to='response') %>% 
+    ggplot(aes(x=x, y=value, color=response)) +
+    geom_line() +
+    scale_y_continuous(limits=c(-1, 1))
+```
+
+```{r sin_cubic_loss}
+sdata %>% 
+    mutate(
+        poly_loss = (pred - y) ^ 2,
+        grad_loss = (grad_pred - y) ^ 2
+    ) %>% 
+    summarise(
+        poly_loss=sum(poly_loss),
+        grad_loss=sum(grad_loss)
+    )
+```
+
