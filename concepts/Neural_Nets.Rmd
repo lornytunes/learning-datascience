@@ -175,6 +175,7 @@ sdata %>%
     geom_line() +
     scale_y_continuous(limits=c(-1, 1))
 ```
+
 ```{r}
 sdata <- sdata %>% 
     mutate(
@@ -185,7 +186,6 @@ sdata <- sdata %>%
 
 
 ```{r sin_cubic_better_fit}
-
 sdata %>% 
     pivot_longer(cols=c('y', 'pred', 'grad_pred'), names_to='response') %>% 
     ggplot(aes(x=x, y=value, color=response)) +

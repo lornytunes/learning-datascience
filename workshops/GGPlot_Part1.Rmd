@@ -166,7 +166,7 @@ ggplot(mpg) + geom_bar(aes(
 ))
 ```
 
-Some stats provide multiple calculate values 
+Some stats provide multiple calculated values
 
 ```{r geom_density_1}
 ggplot(mpg) +
