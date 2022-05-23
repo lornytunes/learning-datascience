@@ -1,0 +1,277 @@
+---
+title: "Interactive Graphics with Plotly - Overview"
+output: html_document
+editor_options: 
+    chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    fig.width=8,
+    fig.height=5,
+    warning = FALSE,
+    message = FALSE
+)
+library(tidyverse)
+library(GGally)
+library(naniar)
+library(plotly)
+```
+
+## First plots
+
+The `plot_ly()` function provides a ‘direct’ interface to [`plotly.js`](https://plotly.com/javascript/) with some additional abstractions to help reduce typing
+
+
+```{r plot_diamonds_by_cut}
+# the default geom - histogram
+plot_ly(diamonds, x = ~cut)
+```
+
+Mapping cut to clarity yields a dodged barchart
+
+```{r plot_diamonds_by_cut_and_clarity}
+plot_ly(diamonds, x = ~cut, color = ~clarity, colors = 'Accent')
+```
+
+```{r mapping_colors_to_clarity}
+# data space
+clarity_vals <- levels(diamonds$clarity)
+# visual space
+RColorBrewer::display.brewer.pal(length(clarity_vals), 'Accent')
+```
+
+
+
+To avoid automatic mapping of values you need to use the `I()` (or `asis`) function:
+
+```{r how_not_to_plot_colors_directly}
+plot_ly(diamonds, x = ~cut, color = "black")
+```
+
+Using `I()` to supply visual properties directly instead of mapping values to a visual range.
+
+Here the value 'black' is being mapped to a visual range spanned by colors (which, for discrete data, defaults to 'Set2').
+
+
+```{r plot_colors_directly}
+plot_ly(
+    diamonds,
+    x = ~cut,
+    # fill color
+    color = I("red"),
+    # outline
+    stroke = I("black"),
+    # width of outline
+    span = I(2)
+)
+```
+
+Every argument to a plotly function expects a ploty object as input and returns a (possibly modified) ploty object as output.
+
+
+```{r first_layout}
+layout(
+    plot_ly(diamonds, x = ~cut),
+    title = 'A histogram of diamonds by cut'
+)
+```
+
+Its usually much easier to use the `%>%` operator:
+
+```{r diamonds_by_cut_using_the_pipe_operator}
+diamonds %>% 
+    plot_ly(x = ~cut) %>% 
+    layout(title = 'Diamonds by cut')
+```
+
+
+In addition to `layout()` for adding/modifying part(s) of the graph’s layout, there are also a family of `add_*()` functions (e.g., `add_histogram()`, `add_lines()`, etc.) that deﬁne how to render data into geometric objects.
+
+
+```{r diamonds_by_cut_with_explicit_histogram_layer}
+diamonds %>% 
+    plot_ly(x = ~cut) %>% 
+    add_histogram()
+```
+
+
+```{r diamonds_by_cut_using_a_bar}
+diamonds %>%
+    dplyr::count(cut) %>%
+    plot_ly() %>%
+    add_bars(x = ~cut, y = ~n)
+```
+
+1. Globally assign cut to x.
+2. Add a histogram layer (inherits the x from `plot_ly()`).
+3. Use `dplyr` verbs to modify the data underlying the `plotly` object. Here we just count the number of diamonds in each cut category.
+4. Add a layer of text using the summarized counts. Note that the global x mapping, as well as the other mappings local to this text layer (text and y), reflects data values from step 3.
+
+
+```{r using_data_transformations}
+diamonds %>%
+    # global
+    plot_ly(x = ~cut) %>%
+    # inherits x
+    add_histogram() %>%
+    # access the underlying data (using the plotly implementation of group_by and summarise)
+    group_by(cut) %>%
+    summarise(n = n()) %>%
+    # this has added the transformed data back to the plotly object
+    # inherit x and map to the text and y aesthetics
+    add_text(
+        text = ~scales::comma(n), y = ~n,
+        textposition = "top middle",
+        cliponaxis = FALSE
+    )
+```
+
+
+```{r viewing_plot_data}
+diamonds %>%
+    plot_ly(x = ~cut) %>%
+    add_histogram() %>%
+    group_by(cut) %>%
+    summarise(n = n()) %>%
+    plotly_data()
+```
+
+
+## The internals - `plotly_build()`
+
+```{r diamonds_cut_clarity_plot}
+p <- plot_ly(
+    diamonds,
+    x = ~cut,
+    color = ~clarity,
+    colors = "Accent"
+)
+p
+```
+
+
+```{r diamonds_cut_clarity_json, include=FALSE}
+p %>% plotly_json()
+```
+
+A portion of the JSON data behind the plot above. This dodged bar chart has eight layers of data (i.e., eight traces or eight histograms), one for each level of clarity.
+
+In plotly.js terminology, a ﬁgure has two key components: `data` (aka, traces) and a `layout`
+
+A __trace__ deﬁnes a mapping from data and visuals.
+
+Every trace has a type (e.g., histogram, pie, scatter, etc.) and the trace type determines what other attributes (i.e., visual and/or interactive properties, like x, hoverinfo, name) are available to control the trace mapping
+
+Note that it takes multiple traces to generate the dodged bar chart
+
+sometimes it’s easier to use `plotly_build()` and compute on the `plotly.js` ﬁgure deﬁnition to verify certain things exist.
+
+```{r cut_clarity_plotly_build}
+b <- plotly_build(p)
+```
+
+
+```{r plotly_build_data}
+length(b$x$data)
+```
+
+Extract the name of each trace. `plotly.js` uses `name` to poulate legend entries and tooltips
+
+```{r plotly_build_trace_names}
+purrr::map_chr(b$x$data, "name")
+```
+
+All traces are of type histogram
+
+```{r plotly_build_trace_types}
+purrr::map_chr(b$x$data, 'type') %>% unique()
+```
+
+
+Here we’ve learned that plotly creates 8 histogram traces to generate the dodged bar chart: one trace for each level of clarity
+
+## Intro to `ggplotly()`
+
+Using `hexbin`
+
+
+```{r diamonds_carat_price_hexbin}
+# no pipe
+ggplotly(
+    ggplot(diamonds, aes(x = log(carat), y = log(price))) +
+    geom_hex(bins = 100)
+)
+```
+
+
+```{r diamonds_carat_price_freqpoly}
+ggplotly(
+    ggplot(diamonds, aes(x = log(price), color = clarity)) +
+    geom_freqpoly()
+)
+```
+
+
+```{r diamonds_carat_price_cut_freqpoly_faceted}
+ggplotly(
+    ggplot(diamonds, aes(x = log(price), color = clarity)) +
+    geom_freqpoly(stat = 'density') +
+    facet_wrap(~cut)
+)
+```
+
+A sina plot of diamond price by clarity and cut.
+
+```{r diamonds_carat_price_geom_sina}
+p <- ggplot(diamonds, aes(x=clarity, y=log(price), color=clarity)) +
+    ggforce::geom_sina(alpha = 0.1) +
+    stat_summary(fun.data = "mean_cl_boot", color = "black") +
+    facet_wrap(~cut)
+toWebGL(ggplotly(p))
+```
+
+
+it’s surprising that the diamond price would decline with an increase of diamond clarity. As it turns out, if we account for the carat of the diamond, then we see that better diamond clarity does indeed lead to a higher diamond price, as shown next
+
+```{r diamonds_carat_price_with_linear_model}
+m <- lm(log(price) ~ log(carat), data = diamonds)
+# remove the effect of carat on price and plot the residuals
+diamonds <- modelr::add_residuals(diamonds, m)
+p <- ggplot(diamonds, aes(x = clarity, y = resid, color = clarity)) +
+    ggforce::geom_sina(alpha = 0.1) +
+    stat_summary(fun.data = "mean_cl_boot", color = "black") +
+    facet_wrap(~cut)
+toWebGL(ggplotly(p))
+```
+
+
+Seeing such a strong pattern in the residuals of simple linear model of carat vs. price indicates that our model could be greatly improved by adding clarity as a predictor of price.
+
+
+```{r linear_model_price_carat_cut}
+m <- lm(log(price) ~ log(carat) + cut, data = diamonds)
+summary(m)
+```
+
+```{r coef_plot}
+ggplotly(ggcoef(m), dynamicTicks = TRUE)
+```
+
+```{r fake_some_missing_data}
+diamonds$price_miss <- ifelse(diamonds$depth>60, diamonds$price, NA)
+```
+
+
+```{r plot_missing_data}
+p <- ggplot(diamonds, aes(x = clarity, y = log(price_miss))) +
+    geom_miss_point(alpha = 0.1) +
+    stat_summary(fun.data = "mean_cl_boot", colour = "black") +
+    facet_wrap(~cut)
+p
+# this doesn't currently work
+# toWebGL(ggplotly(p))
+```
+
+
