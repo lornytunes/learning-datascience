@@ -7,11 +7,7 @@ editor_options:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
-    echo = TRUE,
-    fig.width=8,
-    fig.height=5,
-    warning = FALSE,
-    message = FALSE
+    echo = TRUE, fig.width=8, fig.height=5, warning = FALSE, message = FALSE
 )
 library(tidyverse)
 library(GGally)
@@ -24,18 +20,18 @@ library(plotly)
 The `plot_ly()` function provides a ‘direct’ interface to [`plotly.js`](https://plotly.com/javascript/) with some additional abstractions to help reduce typing
 
 
-```{r plot_diamonds_by_cut}
+```{r plot-diamonds-by-cut}
 # the default geom - histogram
 plot_ly(diamonds, x = ~cut)
 ```
 
 Mapping cut to clarity yields a dodged barchart
 
-```{r plot_diamonds_by_cut_and_clarity}
+```{r plot-diamonds-by-cut-and-clarity}
 plot_ly(diamonds, x = ~cut, color = ~clarity, colors = 'Accent')
 ```
 
-```{r mapping_colors_to_clarity}
+```{r mapping-colors-to-clarity}
 # data space
 clarity_vals <- levels(diamonds$clarity)
 # visual space
@@ -46,7 +42,7 @@ RColorBrewer::display.brewer.pal(length(clarity_vals), 'Accent')
 
 To avoid automatic mapping of values you need to use the `I()` (or `asis`) function:
 
-```{r how_not_to_plot_colors_directly}
+```{r how-not-to-plot-colors-directly}
 plot_ly(diamonds, x = ~cut, color = "black")
 ```
 
@@ -55,7 +51,7 @@ Using `I()` to supply visual properties directly instead of mapping values to a 
 Here the value 'black' is being mapped to a visual range spanned by colors (which, for discrete data, defaults to 'Set2').
 
 
-```{r plot_colors_directly}
+```{r plot-colors-directly}
 plot_ly(
     diamonds,
     x = ~cut,
@@ -71,7 +67,7 @@ plot_ly(
 Every argument to a plotly function expects a ploty object as input and returns a (possibly modified) ploty object as output.
 
 
-```{r first_layout}
+```{r first-layout}
 layout(
     plot_ly(diamonds, x = ~cut),
     title = 'A histogram of diamonds by cut'
@@ -80,7 +76,7 @@ layout(
 
 Its usually much easier to use the `%>%` operator:
 
-```{r diamonds_by_cut_using_the_pipe_operator}
+```{r diamonds-by-cut-using-the-pipe-operator}
 diamonds %>% 
     plot_ly(x = ~cut) %>% 
     layout(title = 'Diamonds by cut')
@@ -90,14 +86,14 @@ diamonds %>%
 In addition to `layout()` for adding/modifying part(s) of the graph’s layout, there are also a family of `add_*()` functions (e.g., `add_histogram()`, `add_lines()`, etc.) that deﬁne how to render data into geometric objects.
 
 
-```{r diamonds_by_cut_with_explicit_histogram_layer}
+```{r diamonds-by-cut-with-explicit-histogram-layer}
 diamonds %>% 
     plot_ly(x = ~cut) %>% 
     add_histogram()
 ```
 
 
-```{r diamonds_by_cut_using_a_bar}
+```{r diamonds-by-cut-using-a-bar}
 diamonds %>%
     dplyr::count(cut) %>%
     plot_ly() %>%
@@ -110,7 +106,7 @@ diamonds %>%
 4. Add a layer of text using the summarized counts. Note that the global x mapping, as well as the other mappings local to this text layer (text and y), reflects data values from step 3.
 
 
-```{r using_data_transformations}
+```{r using-data-transformations}
 diamonds %>%
     # global
     plot_ly(x = ~cut) %>%
@@ -129,7 +125,7 @@ diamonds %>%
 ```
 
 
-```{r viewing_plot_data}
+```{r viewing-plot-data}
 diamonds %>%
     plot_ly(x = ~cut) %>%
     add_histogram() %>%
@@ -141,7 +137,7 @@ diamonds %>%
 
 ## The internals - `plotly_build()`
 
-```{r diamonds_cut_clarity_plot}
+```{r diamonds-cut-clarity-plot}
 p <- plot_ly(
     diamonds,
     x = ~cut,
@@ -152,7 +148,7 @@ p
 ```
 
 
-```{r diamonds_cut_clarity_json, include=FALSE}
+```{r diamonds-cut-clarity-json, include=FALSE}
 p %>% plotly_json()
 ```
 
@@ -168,24 +164,24 @@ Note that it takes multiple traces to generate the dodged bar chart
 
 sometimes it’s easier to use `plotly_build()` and compute on the `plotly.js` ﬁgure deﬁnition to verify certain things exist.
 
-```{r cut_clarity_plotly_build}
+```{r cut-clarity-plotly-build}
 b <- plotly_build(p)
 ```
 
 
-```{r plotly_build_data}
+```{r plotly-build-data}
 length(b$x$data)
 ```
 
 Extract the name of each trace. `plotly.js` uses `name` to poulate legend entries and tooltips
 
-```{r plotly_build_trace_names}
+```{r plotly-build-trace-names}
 purrr::map_chr(b$x$data, "name")
 ```
 
 All traces are of type histogram
 
-```{r plotly_build_trace_types}
+```{r plotly-build-trace-types}
 purrr::map_chr(b$x$data, 'type') %>% unique()
 ```
 
@@ -197,7 +193,7 @@ Here we’ve learned that plotly creates 8 histogram traces to generate the dodg
 Using `hexbin`
 
 
-```{r diamonds_carat_price_hexbin}
+```{r diamonds-carat-price-hexbin}
 # no pipe
 ggplotly(
     ggplot(diamonds, aes(x = log(carat), y = log(price))) +
