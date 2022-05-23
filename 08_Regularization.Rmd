@@ -143,9 +143,7 @@ confmat(car_test, 'pred_lasso')
 
 The lasso model’s accuracy on the test data is similar to the ridge model’s, but the deviance is much lower, indicating better model performance on the test data.
 
-
 ## The Elastic Net Solution: Picking Alpha
-
 
 The `cv.glmnet()` function only optimizes over lambda; it assumes that alpha, the variable that specifies the mix of the ridge and lasso penalties, is fixed. The `glmnetUtils` package provides a function called `cva.glmnet()` that will simultaneously cross-validate for both alpha and lambda.
 
